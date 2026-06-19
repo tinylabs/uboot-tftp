@@ -1,38 +1,35 @@
-"""Dynamic content helpers for fbtftp-based TFTP servers."""
+"""Dynamic content helpers for tftpy-based TFTP servers."""
 
 from .providers import CallableContentProvider, ContentRequest, ContentResult
 from .protocol import ClientMessage, parse_client_filename
-from .response import BytesResponseData, StreamResponseData, response_data_from_result
 from .sessions import ClientSession, InMemorySessionStore, UBootAction
 from .uboot import UBootScriptProvider, UBootScriptRenderer
 from .mkimage import extract_script_payload
+from .uploads import DiskUploadStore, InMemoryUploadStore, UploadedFile, UploadRequest
 
 __all__ = [
-    "BytesResponseData",
     "CallableContentProvider",
     "ClientMessage",
     "ClientSession",
     "ContentRequest",
     "ContentResult",
     "InMemorySessionStore",
-    "DynamicContentHandler",
     "DynamicContentServer",
-    "StreamResponseData",
+    "DiskUploadStore",
+    "InMemoryUploadStore",
+    "UploadedFile",
+    "UploadRequest",
     "UBootAction",
     "UBootScriptProvider",
     "UBootScriptRenderer",
     "extract_script_payload",
     "parse_client_filename",
-    "response_data_from_result",
 ]
 
 
 def __getattr__(name: str):
-    if name in {"DynamicContentHandler", "DynamicContentServer"}:
-        from .server import DynamicContentHandler, DynamicContentServer
+    if name == "DynamicContentServer":
+        from .server import DynamicContentServer
 
-        return {
-            "DynamicContentHandler": DynamicContentHandler,
-            "DynamicContentServer": DynamicContentServer,
-        }[name]
+        return DynamicContentServer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

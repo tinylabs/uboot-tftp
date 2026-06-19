@@ -39,6 +39,14 @@ def validate_uboot_command(command: str) -> str:
     return command
 
 
+def validate_tftp_path(path: str) -> str:
+    if not path or path.startswith("/") or ".." in path.split("/"):
+        raise ValueError(f"invalid TFTP path: {path!r}")
+    if "\n" in path or "\r" in path or '"' in path:
+        raise ValueError(f"invalid TFTP path: {path!r}")
+    return path
+
+
 class UBootActionQueue:
     """Queue actions globally or for a specific client ethaddr."""
 
@@ -145,6 +153,21 @@ class UBootActionQueue:
     def probe(self, ethaddr: str | None = None) -> list[UBootAction]:
         actions = [self.get_uboot_var(name, ethaddr=ethaddr) for name in PROBE_VARS]
         return actions
+
+    def export_env(
+        self,
+        *,
+        path: str = "upload/env.txt",
+        address: str = "${loadaddr}",
+        ethaddr: str | None = None,
+    ) -> UBootAction:
+        action = UBootAction(
+            kind="export_env",
+            name=validate_tftp_path(path),
+            value=validate_uboot_command(address),
+        )
+        self.queue(action, ethaddr=ethaddr)
+        return action
 
     def queue(self, action: UBootAction, ethaddr: str | None = None) -> None:
         with self._lock:

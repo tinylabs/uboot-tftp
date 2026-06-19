@@ -7,6 +7,7 @@ import logging
 
 from .server import DynamicContentServer
 from .uboot import UBootScriptProvider, UBootScriptRenderer
+from .uploads import DiskUploadStore, InMemoryUploadStore
 
 
 def parse_set_var(value: str) -> tuple[str, str]:
@@ -123,6 +124,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Queue a generic RRQ report callback.",
     )
     parser.add_argument(
+        "--upload-dir",
+        help="Persist tftpput uploads under this directory.",
+    )
+    parser.add_argument(
+        "--export-env",
+        nargs="?",
+        const="upload/env.txt",
+        metavar="PATH",
+        help="Export the full U-Boot environment and tftpput it to PATH.",
+    )
+    parser.add_argument(
+        "--export-env-addr",
+        default="${loadaddr}",
+        metavar="ADDRESS",
+        help="Memory address used for --export-env. Defaults to ${loadaddr}.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -138,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     provider = UBootScriptProvider(
         renderer=UBootScriptRenderer(continue_loop=not args.no_loop)
     )
+    uploads = DiskUploadStore(args.upload_dir) if args.upload_dir else InMemoryUploadStore()
     for name in args.get_var:
         provider.get_uboot_var(name, ethaddr=args.ethaddr)
         logging.info("Queued get_uboot_var(%r) ethaddr=%s", name, args.ethaddr or "*")
@@ -194,6 +213,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.reset:
         provider.reset(ethaddr=args.ethaddr)
         logging.info("Queued reset() ethaddr=%s", args.ethaddr or "*")
+    if args.export_env:
+        provider.export_env(
+            path=args.export_env,
+            address=args.export_env_addr,
+            ethaddr=args.ethaddr,
+        )
+        logging.info(
+            "Queued export_env(path=%r, address=%r) ethaddr=%s",
+            args.export_env,
+            args.export_env_addr,
+            args.ethaddr or "*",
+        )
 
     server = DynamicContentServer(
         address=args.address,
@@ -201,12 +232,23 @@ def main(argv: list[str] | None = None) -> int:
         retries=args.retries,
         timeout=args.timeout,
         provider=provider,
+        upload_store=uploads,
     )
 
     try:
         server.run()
     except KeyboardInterrupt:
         server.close()
+        for upload in uploads.all():
+            logging.info(
+                "Captured upload filename=%s size=%d peer=%s:%s",
+                upload.filename,
+                upload.size,
+                upload.peer[0],
+                upload.peer[1],
+            )
+        if args.upload_dir:
+            logging.info("Uploads persisted under %s", args.upload_dir)
     return 0
 
 

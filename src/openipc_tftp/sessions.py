@@ -48,7 +48,15 @@ class ClientSession:
             self.completed_sets.update(message.values)
         elif message.channel == "report":
             self.reports.update(message.values)
-        elif message.channel in {"run", "boot", "reset", "sleep", "printenv", "probe"}:
+        elif message.channel in {
+            "run",
+            "boot",
+            "reset",
+            "sleep",
+            "printenv",
+            "probe",
+            "export-env",
+        }:
             self.completed_actions.update(message.values)
 
 

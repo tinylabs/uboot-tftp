@@ -59,6 +59,12 @@ def test_cli_parses_extended_primitives():
             "--boot",
             "bootm ${loadaddr}",
             "--reset",
+            "--upload-dir",
+            "/tmp/uploads",
+            "--export-env",
+            "upload/full-env.txt",
+            "--export-env-addr",
+            "0x43000000",
         ]
     )
 
@@ -72,3 +78,6 @@ def test_cli_parses_extended_primitives():
     assert args.report == [("filesize", "${filesize}")]
     assert args.boot == "bootm ${loadaddr}"
     assert args.reset is True
+    assert args.upload_dir == "/tmp/uploads"
+    assert args.export_env == "upload/full-env.txt"
+    assert args.export_env_addr == "0x43000000"

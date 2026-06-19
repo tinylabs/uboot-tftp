@@ -55,7 +55,7 @@ class DynamicContentProvider(Protocol):
         """Return content for the requested filename.
 
         Raise FileNotFoundError when the requested filename cannot be resolved.
-        Other exceptions are reported by fbtftp as undefined TFTP errors.
+        Other exceptions are reported by the TFTP transport as transfer errors.
         """
 
 

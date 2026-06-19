@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openipc-tftp"
 version = "0.1.0"
-description = "Reusable dynamic-content extensions for fbtftp."
+description = "Reusable dynamic-content extensions for tftpy."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
   { name = "Tiny Labs" }
 ]
-keywords = ["tftp", "fbtftp", "netboot", "openipc"]
+keywords = ["tftp", "tftpy", "netboot", "openipc"]
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Developers",
@@ -22,7 +22,7 @@ classifiers = [
   "Topic :: Utilities",
 ]
 dependencies = [
-  "fbtftp>=0.5",
+  "tftpy>=0.8.7",
 ]
 
 [project.optional-dependencies]

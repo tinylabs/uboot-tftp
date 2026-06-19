@@ -209,3 +209,46 @@ def test_probe_queues_common_variable_reads():
     )
 
     assert "/var/ipaddr=" in script_from_result(first)
+
+
+def test_export_env_renders_env_export_and_tftpput_upload():
+    provider = UBootScriptProvider(renderer=UBootScriptRenderer(commands=()))
+    provider.export_env()
+
+    result = provider.fetch(
+        ContentRequest(
+            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            peer=("127.0.0.1", 12345),
+            server_addr=("127.0.0.1", 6969),
+            options={"mode": "octet"},
+        )
+    )
+
+    script = script_from_result(result)
+    assert "env export -t ${loadaddr}" in script
+    assert (
+        'if tftpput ${loadaddr} ${filesize} "${serverip}:'
+        'ethaddr=${ethaddr}/upload/env.txt";'
+    ) in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/export-env/export-env=ok"' in script
+
+
+def test_export_env_allows_custom_upload_path_and_address():
+    provider = UBootScriptProvider(renderer=UBootScriptRenderer(commands=()))
+    provider.export_env(path="upload/full-env.txt", address="0x43000000")
+
+    result = provider.fetch(
+        ContentRequest(
+            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            peer=("127.0.0.1", 12345),
+            server_addr=("127.0.0.1", 6969),
+            options={"mode": "octet"},
+        )
+    )
+
+    script = script_from_result(result)
+    assert "env export -t 0x43000000" in script
+    assert (
+        'if tftpput 0x43000000 ${filesize} "${serverip}:'
+        'ethaddr=${ethaddr}/upload/full-env.txt";'
+    ) in script

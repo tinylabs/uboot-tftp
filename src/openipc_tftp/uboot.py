@@ -102,6 +102,18 @@ class UBootScriptRenderer:
             return (
                 f'echo "reporting {action.name}"',
             )
+        if action.kind == "export_env":
+            address = action.value or "${loadaddr}"
+            return (
+                'echo "exporting environment"',
+                f"env export -t {address}",
+                (
+                    f'if tftpput {address} ${{filesize}} "{self.serverip}:'
+                    f'ethaddr=${{ethaddr}}/{action.name}"; '
+                    'then echo "environment uploaded"; '
+                    'else echo "environment upload failed"; fi'
+                ),
+            )
         raise ValueError(f"unknown U-Boot action kind: {action.kind!r}")
 
     def _next_path(self, action: UBootAction | None) -> str:
@@ -125,6 +137,8 @@ class UBootScriptRenderer:
             return "ethaddr=${ethaddr}/boot/boot=ok"
         if action.kind == "reset":
             return "ethaddr=${ethaddr}/reset/reset=ok"
+        if action.kind == "export_env":
+            return "ethaddr=${ethaddr}/export-env/export-env=ok"
         raise ValueError(f"unknown U-Boot action kind: {action.kind!r}")
 
 
@@ -206,6 +220,15 @@ class UBootScriptProvider(DynamicContentProvider):
     def probe(self, ethaddr: str | None = None) -> list[UBootAction]:
         return self.actions.probe(ethaddr=ethaddr)
 
+    def export_env(
+        self,
+        *,
+        path: str = "upload/env.txt",
+        address: str = "${loadaddr}",
+        ethaddr: str | None = None,
+    ) -> UBootAction:
+        return self.actions.export_env(path=path, address=address, ethaddr=ethaddr)
+
     def fetch(self, request: ContentRequest) -> ContentResult:
         message = parse_client_filename(request.filename)
         session = self.sessions.record(message)
@@ -235,7 +258,15 @@ class UBootScriptProvider(DynamicContentProvider):
                     name,
                     value,
                 )
-        elif message.channel in {"run", "boot", "reset", "sleep", "printenv", "probe"}:
+        elif message.channel in {
+            "run",
+            "boot",
+            "reset",
+            "sleep",
+            "printenv",
+            "probe",
+            "export-env",
+        }:
             for name, status in message.values.items():
                 LOGGER.info(
                     "U-Boot action ethaddr=%s channel=%s %s=%s",

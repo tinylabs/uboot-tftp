@@ -1,18 +1,17 @@
 # openipc-tftp
 
 `openipc-tftp` is a small Python package scaffold for building dynamic TFTP
-servers on top of [`fbtftp`](https://github.com/facebookarchive/fbtftp).
+servers on top of [`tftpy`](https://pypi.org/project/tftpy/).
 
 The package keeps the dynamic content decision behind a provider interface. The
 RRQ filename, peer address, server address, and negotiated options are passed to
-that provider, and the provider returns bytes or a binary stream that `fbtftp`
+that provider, and the provider returns bytes or a binary stream that `tftpy`
 can send back to the client.
 
 ## Status
 
-This is a scaffold. It includes packaging metadata, the `fbtftp` adapter layer,
-a minimal CLI, and tests for provider/response behavior. Real content backends
-should be added as provider implementations.
+This is a scaffold. It includes packaging metadata, a `tftpy` adapter layer,
+a minimal CLI, dynamic RRQ responses, and WRQ/tftpput upload capture.
 
 ## Install for Development
 
@@ -102,6 +101,7 @@ openipc-tftp --address 0.0.0.0 --port 6969 --ethaddr aa:bb:cc:dd:ee:ff --get-var
 openipc-tftp --address 0.0.0.0 --port 6969 --run-var bootcmd
 openipc-tftp --address 0.0.0.0 --port 6969 --run-cmd 'echo hello' --run-cmd 'version'
 openipc-tftp --address 0.0.0.0 --port 6969 --probe
+openipc-tftp --address 0.0.0.0 --port 6969 --upload-dir ./uploads --export-env
 ```
 
 Helper actions are sent one at a time as the client loops. Results are logged
@@ -114,10 +114,29 @@ else echo "openipc-tftp: stopping because tftpboot failed"; fi`.
 
 Additional primitives include `--printenv`, `--printenv-var NAME`, `--sleep
 SECONDS`, `--report NAME=EXPRESSION`, `--boot [COMMAND]`, and `--reset`.
-`printenv` output goes to the board's serial console. Without `tftpput` or
-another upload channel, the server cannot receive arbitrary `printenv` stdout;
-only values explicitly encoded into follow-up RRQ filenames can be observed by
-the Python process.
+`printenv` output goes to the board's serial console unless you redirect it into
+memory and upload it with `tftpput`. Uploads are captured in memory by the
+default CLI and summarized when the process exits. To persist uploads to disk,
+start the server with `--upload-dir`:
+
+```bash
+openipc-tftp --address 0.0.0.0 --port 6969 --upload-dir ./uploads
+```
+
+Example U-Boot upload path:
+
+```bash
+tftpput ${baseaddr} ${filesize} "${serverip}:ethaddr=${ethaddr}/upload/env.txt"
+```
+
+That example writes to `./uploads/<mac>/upload/env.txt`. Escaped MACs in the
+uploaded filename are decoded, and the `ethaddr=` prefix is removed from the
+directory name.
+
+The `--export-env [PATH]` helper queues a script that runs `env export -t
+${loadaddr}`, uploads `${loadaddr}`/`${filesize}` with `tftpput`, then continues
+the control loop. Use `--export-env-addr ADDRESS` if `${loadaddr}` is not a safe
+scratch address on your target.
 
 Some desktop TFTP clients interpret `host:file` syntax, so literal MAC colons
 in the remote filename can be misread as a hostname. For local testing with
