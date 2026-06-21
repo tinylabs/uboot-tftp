@@ -33,6 +33,7 @@ class ClientSession:
     pending_receive: PendingReceive | None = None
     server_ip: str = "127.0.0.1"
     current_token: str | None = None
+    env: dict[str, str] = field(default_factory=dict)
 
     def record_rrq(self, parsed: ParsedPath) -> None:
         self.updated_at = time.time()

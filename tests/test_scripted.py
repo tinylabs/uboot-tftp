@@ -37,7 +37,7 @@ def write_config(tmp_path, script_body, route="handler"):
                 'root = "static"',
                 "",
                 "[env]",
-                'ramvar = "loadaddr"',
+                'rambase = "loadaddr"',
                 'cmdtftp = "tftpboot"',
                 'cmdtftpput = "tftpput"',
                 "",
@@ -57,11 +57,11 @@ def test_scripted_provider_routes_by_client_id_and_passes_path(tmp_path):
         tmp_path,
         "\n".join(
             (
-                "async def handler(tftp, ident, path):",
-                "    await tftp.exec([f'echo known {ident} {path}'], final=True)",
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec([f'echo known {ident} {cmd} {env.get(\"board\", \"-\")}'], final=True)",
                 "",
-                "async def default(tftp, ident, path):",
-                "    await tftp.exec([f'echo default {ident} {path}'], final=True)",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec([f'echo default {ident} {cmd}'], final=True)",
             )
         ),
     )
@@ -70,8 +70,8 @@ def test_scripted_provider_routes_by_client_id_and_passes_path(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    assert "echo known cam123 /boot" in script_from_result(provider.fetch(request("id=cam123/boot")))
-    assert "echo default other123 /boot" in script_from_result(
+    assert "echo known cam123 boot -" in script_from_result(provider.fetch(request("id=cam123/boot")))
+    assert "echo default other123 boot" in script_from_result(
         provider.fetch(request("id=other123/boot"))
     )
 
@@ -81,10 +81,10 @@ def test_scripted_provider_serves_static_file_for_bare_rrq(tmp_path):
         tmp_path,
         "\n".join(
             (
-                "async def handler(tftp, ident, path):",
+                "async def handler(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo known'], final=True)",
                 "",
-                "async def default(tftp, ident, path):",
+                "async def default(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo default'], final=True)",
             )
         ),
@@ -107,11 +107,11 @@ def test_exec_appends_internal_continuation_rrq(tmp_path):
         tmp_path,
         "\n".join(
             (
-                "async def handler(tftp, ident, path):",
+                "async def handler(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo step1'])",
                 "    await tftp.exec(['echo step2'], final=True)",
                 "",
-                "async def default(tftp, ident, path):",
+                "async def default(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo default'], final=True)",
             )
         ),
@@ -133,17 +133,75 @@ def test_exec_appends_internal_continuation_rrq(tmp_path):
     assert "token=" not in second
 
 
+def test_target_route_overrides_transport_env_for_new_session(tmp_path):
+    script = tmp_path / "script.py"
+    script.write_text(
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec([f'echo route override {env[\"extra\"]}'])",
+                "    await tftp.exec_recv(['echo receive'], 8)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        )
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[server]",
+                'scriptfile = "script.py"',
+                'root = "static"',
+                "",
+                "[env]",
+                'rambase = "baseaddr"',
+                'cmdtftp = "tftpboot"',
+                'cmdtftpput = "tftpput"',
+                "",
+                "[cam123]",
+                'script = "handler"',
+                'rambase = "loadaddr"',
+                'cmdtftp = "dhcp"',
+                'cmdtftpput = "nmrp"',
+                'extra = "route"',
+                "",
+                "[default]",
+                'script = "default"',
+            )
+        )
+    )
+    config = load_daemon_config(config_path)
+    sessions = InMemorySessionStore()
+    uploads = InMemoryUploadStore(sessions)
+    provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
+
+    first = script_from_result(provider.fetch(request("id=cam123/bootstrap/extra=rrq")))
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "echo route override rrq" in first
+    assert f'dhcp ${{loadaddr}} "127.0.0.1:id=cam123/token={token}"' in first
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    next_token_match = TOKEN_RE.search(second)
+    assert next_token_match is not None
+    next_token = next_token_match.group(1)
+    assert f'nmrp ${{loadaddr}} 8 "127.0.0.1:id=cam123/token={next_token}/upload.bin"' in second
+
+
 def test_exec_recv_returns_uploaded_bytes_on_followup_rrq(tmp_path):
     config = write_config(
         tmp_path,
         "\n".join(
             (
-                "async def handler(tftp, ident, path):",
+                "async def handler(tftp, ident, cmd, env):",
                 "    data = await tftp.exec_recv(['echo send upload'], 8)",
                 "    tftp.write_file('saved/dump.bin', data)",
                 "    await tftp.exec(['echo done'], final=True)",
                 "",
-                "async def default(tftp, ident, path):",
+                "async def default(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo default'], final=True)",
             )
         ),
@@ -182,7 +240,7 @@ def test_exec_recv_can_be_caught_by_user_script(tmp_path):
             (
                 "from openipc_tftp.scripted import ReceiveFailedError",
                 "",
-                "async def handler(tftp, ident, path):",
+                "async def handler(tftp, ident, cmd, env):",
                 "    try:",
                 "        await tftp.exec_recv(['echo send upload'], 8)",
                 "    except ReceiveFailedError:",
@@ -190,7 +248,7 @@ def test_exec_recv_can_be_caught_by_user_script(tmp_path):
                 "        return",
                 "    await tftp.exec(['echo unexpected'], final=True)",
                 "",
-                "async def default(tftp, ident, path):",
+                "async def default(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo default'], final=True)",
             )
         ),
@@ -212,10 +270,10 @@ def test_exec_recv_rejects_final_true(tmp_path):
         tmp_path,
         "\n".join(
             (
-                "async def handler(tftp, ident, path):",
+                "async def handler(tftp, ident, cmd, env):",
                 "    await tftp.exec_recv(['echo bad'], 8, final=True)",
                 "",
-                "async def default(tftp, ident, path):",
+                "async def default(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo default'], final=True)",
             )
         ),
@@ -227,3 +285,67 @@ def test_exec_recv_rejects_final_true(tmp_path):
 
     with pytest.raises(ValueError, match="final=True"):
         provider.fetch(request("id=cam123/bootstrap"))
+
+
+def test_initial_rrq_values_override_route_and_base_env(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec([",
+                "        f'echo cmd {cmd}',",
+                "        f'echo host {env[\"host\"]}',",
+                "        f'echo mode {env[\"mode\"]}',",
+                "    ], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    config.env["host"] = "base"
+    config.routes["cam123"].env["host"] = "route"
+    config.routes["cam123"].env["mode"] = "route-mode"
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = script_from_result(
+        provider.fetch(request("id=cam123/bootstrap/host=rrq/mode=rrq-mode"))
+    )
+    assert "echo cmd bootstrap" in script
+    assert "echo host rrq" in script
+    assert "echo mode rrq-mode" in script
+
+
+def test_transport_keys_are_removed_from_env_argument(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec([",
+                "        f'echo has_rambase {\"rambase\" in env}',",
+                "        f'echo has_cmdtftp {\"cmdtftp\" in env}',",
+                "        f'echo has_cmdtftpput {\"cmdtftpput\" in env}',",
+                "        f'echo user_value {env[\"user\"]}',",
+                "    ], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    config.env["user"] = "visible"
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    assert "echo has_rambase False" in script
+    assert "echo has_cmdtftp False" in script
+    assert "echo has_cmdtftpput False" in script
+    assert "echo user_value visible" in script

@@ -51,7 +51,7 @@ timeout = 5
 retries = 3
 
 [env]
-ramvar = "loadaddr"
+rambase = "loadaddr"
 cmdtftp = "tftpboot"
 cmdtftpput = "tftpput"
 
@@ -70,22 +70,23 @@ Example [`script.py`](/home/elliot/work/openipc/openipc-tftp/script.py:1):
 from openipc_tftp.scripted import ReceiveFailedError
 
 
-async def default(tftp, ident, path):
+async def default(tftp, ident, cmd, env):
     await tftp.exec(
         [
             f"echo default session for {ident}",
-            f"echo requested path: {path}",
+            f"echo requested cmd: {cmd}",
+            f"echo env hostname: {env.get('hostname', '<unset>')}",
         ],
         final=True,
     )
 
 
-async def camera_bootstrap(tftp, ident, path):
-    if path == "/bootstrap":
+async def camera_bootstrap(tftp, ident, cmd, env):
+    if cmd == "bootstrap":
         await tftp.exec(
             [
                 f"echo preparing {ident}",
-                f"echo using ${tftp.baseaddr_var}",
+                f"echo using {tftp.rambase}",
             ]
         )
 
@@ -93,7 +94,7 @@ async def camera_bootstrap(tftp, ident, path):
             data = await tftp.exec_recv(
                 [
                     "echo uploading environment snapshot",
-                    f"env export -t ${{{tftp.baseaddr_var}}}",
+                    f"env export -t {tftp.rambase}",
                 ],
                 4096,
             )
@@ -105,7 +106,7 @@ async def camera_bootstrap(tftp, ident, path):
         await tftp.exec(["echo bootstrap complete"], final=True)
         return
 
-    await tftp.exec([f"echo unknown path {path}"], final=True)
+    await tftp.exec([f"echo unknown cmd {cmd}"], final=True)
 ```
 
 ## Static Files

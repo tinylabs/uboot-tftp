@@ -55,17 +55,17 @@ class SessionHandle:
         return self.session.client_id
 
     @property
-    def baseaddr_var(self) -> str:
-        return self.provider.baseaddr_var
+    def rambase_var(self) -> str:
+        return self.session.env["rambase"]
 
     @property
-    def baseaddr(self) -> str:
-        return f"${{{self.baseaddr_var}}}"
+    def rambase(self) -> str:
+        return f"${{{self.rambase_var}}}"
 
     def get_config(self, key: str, default: str | None = None) -> str:
         if default is not None:
-            return self.provider.config.env.get(key, default)
-        return self.provider.config.env[key]
+            return self.session.env.get(key, default)
+        return self.session.env[key]
 
     async def exec(
         self,
@@ -124,9 +124,6 @@ class ScriptedSessionProvider(DynamicContentProvider):
         self._module = _load_script_module(config.script_path)
         self.static_root = config.static_root
         self.static_root.mkdir(parents=True, exist_ok=True)
-        self.cmd_tftp = self.config.env.get("cmdtftp", "tftpboot")
-        self.cmd_tftpput = self.config.env.get("cmdtftpput", "tftpput")
-        self.baseaddr_var = self.config.env.get("ramvar", "baseaddr")
 
     def fetch(self, request: ContentRequest) -> ContentResult:
         parsed = parse_request_path(request.filename)
@@ -140,14 +137,25 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session = self.sessions.replace(parsed.client_id)
         session.record_rrq(parsed)
         session.server_ip = _get_local_ip(str(request.peer[0]))
+        route = self._route_for(parsed.client_id)
+        session.env = dict(self.config.env)
+        session.env.update(route.env)
         handle = SessionHandle(
             provider=self,
             session=session,
             parsed=parsed,
             request=request,
         )
-        function = self._function_for(parsed.client_id)
-        handler = function(handle, parsed.client_id, parsed.path)
+        function = getattr(self._module, route.script, None)
+        if not callable(function):
+            raise ValueError(f"script function not found: {route.script}")
+        session.env = _session_env(self.config.env, route.env, parsed)
+        handler = function(
+            handle,
+            parsed.client_id,
+            _command_from_segments(parsed.segments),
+            _public_env(session.env),
+        )
         if not inspect.iscoroutine(handler):
             raise TypeError("session handlers must be async functions")
         session.handler = handler
@@ -231,9 +239,9 @@ class ScriptedSessionProvider(DynamicContentProvider):
         if recv_status is not None:
             path = f"{path}/recv={recv_status}"
         command = (
-            f'if {self.cmd_tftp} ${{{self.baseaddr_var}}} '
+            f'if {session.env["cmdtftp"]} ${{{session.env["rambase"]}}} '
             f'"{session.server_ip}:{path}"; '
-            f'then source ${{{self.baseaddr_var}}}; '
+            f'then source ${{{session.env["rambase"]}}}; '
             'else echo "openipc-tftp: continuation RRQ failed"; fi'
         )
         return _join_script_lines((script, command))
@@ -246,21 +254,17 @@ class ScriptedSessionProvider(DynamicContentProvider):
         success = self._append_continue(script="", session=session, recv_status="ok")
         failure = self._append_continue(script="", session=session, recv_status="failed")
         receive = (
-            f'if {self.cmd_tftpput} ${{{self.baseaddr_var}}} {pending.size} '
+            f'if {session.env["cmdtftpput"]} ${{{session.env["rambase"]}}} {pending.size} '
             f'"{session.server_ip}:{upload_remote}"; '
             f"then {success} "
             f"else {failure} fi"
         )
         return _join_script_lines((script, receive))
 
-    def _function_for(self, client_id: str | None):
-        route = self.config.default if client_id is None else self.config.routes.get(
+    def _route_for(self, client_id: str | None):
+        return self.config.default if client_id is None else self.config.routes.get(
             client_id.lower(), self.config.default
         )
-        function = getattr(self._module, route.script, None)
-        if not callable(function):
-            raise ValueError(f"script function not found: {route.script}")
-        return function
 
     def _static_result(self, path: str) -> ContentResult:
         file_path = _resolve_static_path(self.static_root, path)
@@ -301,6 +305,29 @@ def _join_script_lines(lines: str | Iterable[str]) -> str:
 
 def _ensure_newline(script: str) -> str:
     return script if script.endswith("\n") else f"{script}\n"
+
+
+def _command_from_segments(segments: tuple[str, ...]) -> str:
+    return segments[0] if segments else ""
+
+
+def _session_env(
+    base_env: dict[str, str],
+    route_env: dict[str, str],
+    parsed: ParsedPath,
+) -> dict[str, str]:
+    merged = dict(base_env)
+    merged.update(route_env)
+    for segment in parsed.segments[1:]:
+        key, separator, value = segment.partition("=")
+        if separator == "=" and key:
+            merged[key] = value
+    return merged
+
+
+def _public_env(env: dict[str, str]) -> dict[str, str]:
+    hidden = {"rambase", "cmdtftp", "cmdtftpput"}
+    return {key: value for key, value in env.items() if key not in hidden}
 
 
 def _get_local_ip(peer_hint: str) -> str:

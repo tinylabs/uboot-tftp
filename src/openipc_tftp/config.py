@@ -11,6 +11,7 @@ from typing import Any
 @dataclass(frozen=True)
 class ScriptRoute:
     script: str
+    env: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -51,8 +52,14 @@ def load_daemon_config(path: str | Path) -> DaemonConfig:
 
     server = dict(data.get("server", {}))
     env = {str(key): str(value) for key, value in dict(data.get("env", {})).items()}
+    _validate_base_env(env)
     default_section = dict(data.get("default", {}))
     default_script = str(default_section.get("script", "default"))
+    default_env = {
+        str(key): str(value)
+        for key, value in default_section.items()
+        if str(key) != "script"
+    }
 
     routes: dict[str, ScriptRoute] = {}
     for section, values in data.items():
@@ -61,15 +68,29 @@ def load_daemon_config(path: str | Path) -> DaemonConfig:
         route = dict(values)
         if "script" not in route:
             raise ValueError(f"[{section}] must set script")
-        routes[str(section).lower()] = ScriptRoute(script=str(route["script"]))
+        route_env = {
+            str(key): str(value) for key, value in route.items() if str(key) != "script"
+        }
+        routes[str(section).lower()] = ScriptRoute(
+            script=str(route["script"]),
+            env=route_env,
+        )
 
     return DaemonConfig(
         path=config_path.resolve(),
         server=server,
         env=env,
         routes=routes,
-        default=ScriptRoute(script=default_script),
+        default=ScriptRoute(script=default_script, env=default_env),
     )
+
+
+def _validate_base_env(env: dict[str, str]) -> None:
+    required = ("rambase", "cmdtftp", "cmdtftpput")
+    missing = [key for key in required if key not in env]
+    if missing:
+        names = ", ".join(missing)
+        raise ValueError(f"[env] must define: {names}")
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
