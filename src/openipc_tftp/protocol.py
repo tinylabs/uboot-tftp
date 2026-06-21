@@ -6,14 +6,14 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import unquote
 
-ETHADDR_RE = re.compile(r"^[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}$")
+CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass(frozen=True)
 class ClientMessage:
     """A parsed RRQ filename from the U-Boot client."""
 
-    ethaddr: str
+    client_id: str
     segments: tuple[str, ...] = ()
     values: dict[str, str] = field(default_factory=dict)
 
@@ -22,8 +22,15 @@ class ClientMessage:
         return self.segments[0] if self.segments else "bootstrap"
 
 
+def normalize_client_id(value: str) -> str:
+    client_id = value.lower()
+    if not CLIENT_ID_RE.match(client_id):
+        raise ValueError(f"invalid client id: {value!r}")
+    return client_id
+
+
 def parse_client_filename(filename: str) -> ClientMessage:
-    """Parse `ethaddr=<mac>/...` RRQ filenames.
+    """Parse `id=<identifier>/...` RRQ filenames.
 
     Path segment values are URL-decoded. Segments in `key=value` form are also
     exposed in `values`.
@@ -38,12 +45,10 @@ def parse_client_filename(filename: str) -> ClientMessage:
         raise ValueError("empty RRQ filename")
 
     key, separator, value = raw_segments[0].partition("=")
-    if key != "ethaddr" or separator != "=":
-        raise ValueError("RRQ filename must start with ethaddr=<mac>")
+    if key != "id" or separator != "=":
+        raise ValueError("RRQ filename must start with id=<identifier>")
 
-    ethaddr = value.lower()
-    if not ETHADDR_RE.match(ethaddr):
-        raise ValueError(f"invalid ethaddr: {value!r}")
+    client_id = normalize_client_id(value)
 
     message_segments = raw_segments[1:]
     values: dict[str, str] = {}
@@ -53,7 +58,7 @@ def parse_client_filename(filename: str) -> ClientMessage:
             values[segment_key] = segment_value
 
     return ClientMessage(
-        ethaddr=ethaddr,
+        client_id=client_id,
         segments=message_segments,
         values=values,
     )

@@ -15,7 +15,7 @@ def test_uboot_script_provider_returns_compiled_script_image():
     )
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -27,19 +27,19 @@ def test_uboot_script_provider_returns_compiled_script_image():
     assert extract_script_payload(result.body).endswith(b'echo "test"\n')
 
 
-def test_uboot_script_provider_tracks_env_by_ethaddr():
+def test_uboot_script_provider_tracks_env_by_client_id():
     provider = UBootScriptProvider(renderer=UBootScriptRenderer(continue_loop=False))
 
     provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/env/ipaddr=192.168.1.50",
+            filename="id=cam123/env/ipaddr=192.168.1.50",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
         )
     )
 
-    session = provider.sessions.get_or_create("aa:bb:cc:dd:ee:ff")
+    session = provider.sessions.get_or_create("cam123")
     assert session.env == {"ipaddr": "192.168.1.50"}
     assert session.sequence == 1
 
@@ -48,7 +48,7 @@ def test_compiled_provider_response_uses_uboot_script_type():
     provider = UBootScriptProvider(renderer=UBootScriptRenderer(continue_loop=False))
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -65,7 +65,7 @@ def test_get_uboot_var_queues_variable_read_script():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -74,7 +74,7 @@ def test_get_uboot_var_queues_variable_read_script():
 
     script = script_from_result(result)
     assert 'echo "getting ipaddr"' in script
-    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/var/ipaddr=${ipaddr}"' in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:id=${serial#}/var/ipaddr=${ipaddr}"' in script
     assert "then source ${baseaddr};" in script
     assert 'else echo "openipc-tftp: stopping because tftpboot failed"; fi' in script
 
@@ -85,7 +85,7 @@ def test_set_uboot_var_queues_variable_write_script_with_saveenv():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -95,16 +95,16 @@ def test_set_uboot_var_queues_variable_write_script_with_saveenv():
     script = script_from_result(result)
     assert "setenv bootdelay 3" in script
     assert "saveenv" in script
-    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/set/bootdelay=ok"' in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:id=${serial#}/set/bootdelay=ok"' in script
 
 
-def test_targeted_action_waits_for_matching_ethaddr():
+def test_targeted_action_waits_for_matching_client_id():
     provider = UBootScriptProvider(renderer=UBootScriptRenderer(commands=()))
-    provider.get_uboot_var("ipaddr", ethaddr="aa:bb:cc:dd:ee:ff")
+    provider.get_uboot_var("ipaddr", client_id="cam123")
 
     other_result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=11:22:33:44:55:66/",
+            filename="id=other123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -112,7 +112,7 @@ def test_targeted_action_waits_for_matching_ethaddr():
     )
     target_result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -129,7 +129,7 @@ def test_run_uboot_var_renders_run_and_completion_callback():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -138,7 +138,7 @@ def test_run_uboot_var_renders_run_and_completion_callback():
 
     script = script_from_result(result)
     assert "run bootcmd" in script
-    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/run/bootcmd=ok"' in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:id=${serial#}/run/bootcmd=ok"' in script
 
 
 def test_run_uboot_commands_renders_inline_batch():
@@ -147,7 +147,7 @@ def test_run_uboot_commands_renders_inline_batch():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -157,7 +157,7 @@ def test_run_uboot_commands_renders_inline_batch():
     script = script_from_result(result)
     assert "echo one" in script
     assert "echo two" in script
-    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/run/smoke=ok"' in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:id=${serial#}/run/smoke=ok"' in script
 
 
 def test_printenv_renders_serial_print_and_completion_callback():
@@ -166,7 +166,7 @@ def test_printenv_renders_serial_print_and_completion_callback():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -175,7 +175,7 @@ def test_printenv_renders_serial_print_and_completion_callback():
 
     script = script_from_result(result)
     assert "printenv ipaddr" in script
-    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/printenv/printenv=ok"' in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:id=${serial#}/printenv/printenv=ok"' in script
 
 
 def test_report_renders_generic_report_callback():
@@ -184,7 +184,7 @@ def test_report_renders_generic_report_callback():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -192,7 +192,7 @@ def test_report_renders_generic_report_callback():
     )
 
     script = script_from_result(result)
-    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/report/filesize=${filesize}"' in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:id=${serial#}/report/filesize=${filesize}"' in script
 
 
 def test_probe_queues_common_variable_reads():
@@ -201,7 +201,7 @@ def test_probe_queues_common_variable_reads():
 
     first = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -217,7 +217,7 @@ def test_export_env_renders_env_export_and_tftpput_upload():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -228,9 +228,9 @@ def test_export_env_renders_env_export_and_tftpput_upload():
     assert "env export -t ${loadaddr}" in script
     assert (
         'if tftpput ${loadaddr} ${filesize} "${serverip}:'
-        'ethaddr=${ethaddr}/upload/env.txt";'
+        'id=${serial#}/upload/env.txt";'
     ) in script
-    assert 'if tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/export-env/export-env=ok"' in script
+    assert 'if tftpboot ${baseaddr} "${serverip}:id=${serial#}/export-env/export-env=ok"' in script
 
 
 def test_export_env_allows_custom_upload_path_and_address():
@@ -239,7 +239,7 @@ def test_export_env_allows_custom_upload_path_and_address():
 
     result = provider.fetch(
         ContentRequest(
-            filename="ethaddr=aa:bb:cc:dd:ee:ff/",
+            filename="id=cam123/",
             peer=("127.0.0.1", 12345),
             server_addr=("127.0.0.1", 6969),
             options={"mode": "octet"},
@@ -250,5 +250,5 @@ def test_export_env_allows_custom_upload_path_and_address():
     assert "env export -t 0x43000000" in script
     assert (
         'if tftpput 0x43000000 ${filesize} "${serverip}:'
-        'ethaddr=${ethaddr}/upload/full-env.txt";'
+        'id=${serial#}/upload/full-env.txt";'
     ) in script

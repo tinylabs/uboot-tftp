@@ -21,8 +21,8 @@ class UBootScriptRenderer:
     baseaddr: str = "${baseaddr}"
     serverip: str = "${serverip}"
     next_path: str = (
-        "ethaddr=${ethaddr}/env/"
-        "ipaddr=${ipaddr}/serverip=${serverip}/serial=${serial#}"
+        "id=${serial#}/env/"
+        "ipaddr=${ipaddr}/serverip=${serverip}/ethaddr=${ethaddr}"
     )
     commands: tuple[str, ...] = field(
         default_factory=lambda: (
@@ -39,7 +39,7 @@ class UBootScriptRenderer:
         action: UBootAction | None = None,
     ) -> str:
         lines = [
-            f'echo "openipc-tftp session {session.sequence} for {message.ethaddr}"',
+            f'echo "openipc-tftp session {session.sequence} for {message.client_id}"',
             *self.commands,
         ]
         if action is not None:
@@ -109,7 +109,7 @@ class UBootScriptRenderer:
                 f"env export -t {address}",
                 (
                     f'if tftpput {address} ${{filesize}} "{self.serverip}:'
-                    f'ethaddr=${{ethaddr}}/{action.name}"; '
+                    f'id=${{serial#}}/{action.name}"; '
                     'then echo "environment uploaded"; '
                     'else echo "environment upload failed"; fi'
                 ),
@@ -120,25 +120,25 @@ class UBootScriptRenderer:
         if action is None:
             return self.next_path
         if action.kind == "get_var":
-            return f"ethaddr=${{ethaddr}}/var/{action.name}=${{{action.name}}}"
+            return f"id=${{serial#}}/var/{action.name}=${{{action.name}}}"
         if action.kind == "set_var":
-            return f"ethaddr=${{ethaddr}}/set/{action.name}=ok"
+            return f"id=${{serial#}}/set/{action.name}=ok"
         if action.kind == "run_var":
-            return f"ethaddr=${{ethaddr}}/run/{action.name}=ok"
+            return f"id=${{serial#}}/run/{action.name}=ok"
         if action.kind == "run_commands":
-            return f"ethaddr=${{ethaddr}}/run/{action.name}=ok"
+            return f"id=${{serial#}}/run/{action.name}=ok"
         if action.kind == "printenv":
-            return "ethaddr=${ethaddr}/printenv/printenv=ok"
+            return "id=${serial#}/printenv/printenv=ok"
         if action.kind == "sleep":
-            return f"ethaddr=${{ethaddr}}/sleep/{action.value or '0'}=ok"
+            return f"id=${{serial#}}/sleep/{action.value or '0'}=ok"
         if action.kind == "report":
-            return f"ethaddr=${{ethaddr}}/report/{action.name}={action.value or ''}"
+            return f"id=${{serial#}}/report/{action.name}={action.value or ''}"
         if action.kind == "boot":
-            return "ethaddr=${ethaddr}/boot/boot=ok"
+            return "id=${serial#}/boot/boot=ok"
         if action.kind == "reset":
-            return "ethaddr=${ethaddr}/reset/reset=ok"
+            return "id=${serial#}/reset/reset=ok"
         if action.kind == "export_env":
-            return "ethaddr=${ethaddr}/export-env/export-env=ok"
+            return "id=${serial#}/export-env/export-env=ok"
         raise ValueError(f"unknown U-Boot action kind: {action.kind!r}")
 
 
@@ -161,9 +161,9 @@ class UBootScriptProvider(DynamicContentProvider):
     def get_uboot_var(
         self,
         name: str,
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
-        return self.actions.get_uboot_var(name, ethaddr=ethaddr)
+        return self.actions.get_uboot_var(name, client_id=client_id)
 
     def set_uboot_var(
         self,
@@ -171,90 +171,90 @@ class UBootScriptProvider(DynamicContentProvider):
         value: str,
         *,
         saveenv: bool = False,
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
         return self.actions.set_uboot_var(
             name,
             value,
             saveenv=saveenv,
-            ethaddr=ethaddr,
+            client_id=client_id,
         )
 
-    def run_uboot_var(self, name: str, ethaddr: str | None = None) -> UBootAction:
-        return self.actions.run_uboot_var(name, ethaddr=ethaddr)
+    def run_uboot_var(self, name: str, client_id: str | None = None) -> UBootAction:
+        return self.actions.run_uboot_var(name, client_id=client_id)
 
     def run_uboot_commands(
         self,
         commands: tuple[str, ...] | list[str],
         *,
         name: str = "inline",
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
-        return self.actions.run_uboot_commands(commands, name=name, ethaddr=ethaddr)
+        return self.actions.run_uboot_commands(commands, name=name, client_id=client_id)
 
     def printenv(
         self,
         names: tuple[str, ...] | list[str] = (),
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
-        return self.actions.printenv(names, ethaddr=ethaddr)
+        return self.actions.printenv(names, client_id=client_id)
 
-    def reset(self, ethaddr: str | None = None) -> UBootAction:
-        return self.actions.reset(ethaddr=ethaddr)
+    def reset(self, client_id: str | None = None) -> UBootAction:
+        return self.actions.reset(client_id=client_id)
 
-    def boot(self, command: str = "boot", ethaddr: str | None = None) -> UBootAction:
-        return self.actions.boot(command, ethaddr=ethaddr)
+    def boot(self, command: str = "boot", client_id: str | None = None) -> UBootAction:
+        return self.actions.boot(command, client_id=client_id)
 
-    def sleep(self, seconds: int, ethaddr: str | None = None) -> UBootAction:
-        return self.actions.sleep(seconds, ethaddr=ethaddr)
+    def sleep(self, seconds: int, client_id: str | None = None) -> UBootAction:
+        return self.actions.sleep(seconds, client_id=client_id)
 
     def report(
         self,
         name: str,
         expression: str,
         *,
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
-        return self.actions.report(name, expression, ethaddr=ethaddr)
+        return self.actions.report(name, expression, client_id=client_id)
 
-    def probe(self, ethaddr: str | None = None) -> list[UBootAction]:
-        return self.actions.probe(ethaddr=ethaddr)
+    def probe(self, client_id: str | None = None) -> list[UBootAction]:
+        return self.actions.probe(client_id=client_id)
 
     def export_env(
         self,
         *,
         path: str = "upload/env.txt",
         address: str = "${loadaddr}",
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
-        return self.actions.export_env(path=path, address=address, ethaddr=ethaddr)
+        return self.actions.export_env(path=path, address=address, client_id=client_id)
 
     def fetch(self, request: ContentRequest) -> ContentResult:
         message = parse_client_filename(request.filename)
         session = self.sessions.record(message)
-        action = self.actions.next_action(message.ethaddr)
+        action = self.actions.next_action(message.client_id)
         LOGGER.info(
-            "U-Boot RRQ from ethaddr=%s channel=%s values=%s",
-            message.ethaddr,
+            "U-Boot RRQ from id=%s channel=%s values=%s",
+            message.client_id,
             message.channel,
             message.values,
         )
         if message.channel == "var":
             for name, value in message.values.items():
-                LOGGER.info("U-Boot var ethaddr=%s %s=%s", message.ethaddr, name, value)
+                LOGGER.info("U-Boot var id=%s %s=%s", message.client_id, name, value)
         elif message.channel == "set":
             for name, status in message.values.items():
                 LOGGER.info(
-                    "U-Boot set ethaddr=%s %s=%s",
-                    message.ethaddr,
+                    "U-Boot set id=%s %s=%s",
+                    message.client_id,
                     name,
                     status,
                 )
         elif message.channel == "report":
             for name, value in message.values.items():
                 LOGGER.info(
-                    "U-Boot report ethaddr=%s %s=%s",
-                    message.ethaddr,
+                    "U-Boot report id=%s %s=%s",
+                    message.client_id,
                     name,
                     value,
                 )
@@ -269,16 +269,16 @@ class UBootScriptProvider(DynamicContentProvider):
         }:
             for name, status in message.values.items():
                 LOGGER.info(
-                    "U-Boot action ethaddr=%s channel=%s %s=%s",
-                    message.ethaddr,
+                    "U-Boot action id=%s channel=%s %s=%s",
+                    message.client_id,
                     message.channel,
                     name,
                     status,
                 )
         if action is not None:
             LOGGER.info(
-                "Sending U-Boot action ethaddr=%s kind=%s name=%s",
-                message.ethaddr,
+                "Sending U-Boot action id=%s kind=%s name=%s",
+                message.client_id,
                 action.kind,
                 action.name,
             )

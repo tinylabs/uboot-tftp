@@ -4,23 +4,35 @@ from openipc_tftp.protocol import parse_client_filename
 
 
 def test_parse_bootstrap_filename():
-    message = parse_client_filename("ethaddr=AA:BB:CC:DD:EE:FF/")
+    message = parse_client_filename("id=CAM123/")
 
-    assert message.ethaddr == "aa:bb:cc:dd:ee:ff"
+    assert message.client_id == "cam123"
     assert message.channel == "bootstrap"
     assert message.segments == ()
     assert message.values == {}
 
 
-def test_parse_percent_encoded_mac_for_desktop_tftp_clients():
-    message = parse_client_filename("ethaddr=aa%3Abb%3Acc%3Add%3Aee%3Aff/")
+def test_parse_client_id():
+    message = parse_client_filename("id=cam123/")
 
-    assert message.ethaddr == "aa:bb:cc:dd:ee:ff"
+    assert message.client_id == "cam123"
+
+
+def test_parse_hyphenated_client_id():
+    message = parse_client_filename("id=cam-123/")
+
+    assert message.client_id == "cam-123"
+
+
+def test_parse_underscored_client_id():
+    message = parse_client_filename("id=cam_123/")
+
+    assert message.client_id == "cam_123"
 
 
 def test_parse_env_filename_values():
     message = parse_client_filename(
-        "ethaddr=aa:bb:cc:dd:ee:ff/env/ipaddr=192.168.1.50/serial=abc123"
+        "id=cam123/env/ipaddr=192.168.1.50/serial=abc123"
     )
 
     assert message.channel == "env"
@@ -30,11 +42,11 @@ def test_parse_env_filename_values():
     }
 
 
-def test_parse_rejects_missing_ethaddr_prefix():
-    with pytest.raises(ValueError, match="ethaddr"):
+def test_parse_rejects_missing_id_prefix():
+    with pytest.raises(ValueError, match="id"):
         parse_client_filename("env/ipaddr=192.168.1.50")
 
 
-def test_parse_rejects_invalid_mac():
-    with pytest.raises(ValueError, match="invalid ethaddr"):
-        parse_client_filename("ethaddr=bad/env")
+def test_parse_rejects_invalid_client_id():
+    with pytest.raises(ValueError, match="invalid client id"):
+        parse_client_filename("id=cam.123/env")

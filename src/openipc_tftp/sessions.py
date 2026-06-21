@@ -24,7 +24,7 @@ class UBootAction:
 class ClientSession:
     """Server-side state for one U-Boot client stream."""
 
-    ethaddr: str
+    client_id: str
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     sequence: int = 0
@@ -61,34 +61,34 @@ class ClientSession:
 
 
 class InMemorySessionStore:
-    """Simple process-local session store keyed by client ethaddr."""
+    """Simple process-local session store keyed by client identifier."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, ClientSession] = {}
         self._lock = RLock()
 
-    def get_or_create(self, ethaddr: str) -> ClientSession:
+    def get_or_create(self, client_id: str) -> ClientSession:
         with self._lock:
-            session = self._sessions.get(ethaddr)
+            session = self._sessions.get(client_id)
             if session is None:
-                session = ClientSession(ethaddr=ethaddr)
-                self._sessions[ethaddr] = session
+                session = ClientSession(client_id=client_id)
+                self._sessions[client_id] = session
             return session
 
     def record(self, message: ClientMessage) -> ClientSession:
         with self._lock:
-            session = self.get_or_create(message.ethaddr)
+            session = self.get_or_create(message.client_id)
             session.record(message)
             return session
 
-    def queue_action(self, ethaddr: str, action: UBootAction) -> None:
+    def queue_action(self, client_id: str, action: UBootAction) -> None:
         with self._lock:
-            session = self.get_or_create(ethaddr)
+            session = self.get_or_create(client_id)
             session.action_queue.append(action)
 
-    def next_action(self, ethaddr: str) -> UBootAction | None:
+    def next_action(self, client_id: str) -> UBootAction | None:
         with self._lock:
-            session = self.get_or_create(ethaddr)
+            session = self.get_or_create(client_id)
             if not session.action_queue:
                 return None
             return session.action_queue.pop(0)

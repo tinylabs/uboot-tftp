@@ -32,22 +32,24 @@ python -m pip install -e .
 
 ## U-Boot Protocol
 
-The primary client key is the MAC address encoded into the RRQ filename:
+The primary client key is an identifier containing letters, digits, `-`, and `_`
+encoded into the RRQ
+filename:
 
 ```text
-ethaddr=aa:bb:cc:dd:ee:ff/
-ethaddr=aa:bb:cc:dd:ee:ff/env/ipaddr=192.168.1.50/serial=abc123
+id=cam123/
+id=cam123/env/ipaddr=192.168.1.50/serial=abc123
 ```
 
-The first segment must be `ethaddr=<mac>`. Remaining path segments are protocol
+The first segment must be `id=<identifier>`. Remaining path segments are protocol
 data. Segments in `key=value` form are parsed and attached to the in-memory
 client session. The built-in session store is process-local and keyed by
-`ethaddr`.
+client identifier.
 
 The intended U-Boot bootstrap is:
 
 ```bash
-setenv autoload no; dhcp; tftpboot ${baseaddr} "${serverip}:ethaddr=${ethaddr}/"; source ${baseaddr}
+setenv autoload no; dhcp; tftpboot ${baseaddr} "${serverip}:id=cam123/"; source ${baseaddr}
 ```
 
 Responses are generated as U-Boot legacy script images in pure Python, matching
@@ -81,72 +83,92 @@ server = DynamicContentServer(
 server.run()
 ```
 
-## CLI Scaffold
+## Daemon Config
 
-The included CLI returns generated U-Boot script images for the filename
-protocol above:
-
-```bash
-openipc-tftp --address :: --port 6969
-```
-
-For a one-shot script that does not request the next script, use `--no-loop`.
-
-For hardware testing, queue simple helper actions from the CLI:
+The CLI runs as a config-driven daemon and takes one argument: a TOML file.
 
 ```bash
-openipc-tftp --address 0.0.0.0 --port 6969 --get-var ipaddr
-openipc-tftp --address 0.0.0.0 --port 6969 --set-var bootdelay=3 --saveenv
-openipc-tftp --address 0.0.0.0 --port 6969 --ethaddr aa:bb:cc:dd:ee:ff --get-var serverip
-openipc-tftp --address 0.0.0.0 --port 6969 --run-var bootcmd
-openipc-tftp --address 0.0.0.0 --port 6969 --run-cmd 'echo hello' --run-cmd 'version'
-openipc-tftp --address 0.0.0.0 --port 6969 --probe
-openipc-tftp --address 0.0.0.0 --port 6969 --upload-dir ./uploads --export-env
+openipc-tftp config.toml
 ```
 
-Helper actions are sent one at a time as the client loops. Results are logged
-when the client reports back with paths such as
-`ethaddr=<mac>/var/ipaddr=<value>` or `ethaddr=<mac>/set/bootdelay=ok`.
-Generated follow-up scripts include the server prefix and only `source` the next
-script if the download succeeds, for example `if tftpboot ${baseaddr}
-"${serverip}:ethaddr=${ethaddr}/var/ipaddr=${ipaddr}"; then source ${baseaddr};
-else echo "openipc-tftp: stopping because tftpboot failed"; fi`.
+The TOML file has `[server]`, `[env]`, one section per known client ID, and a
+`[default]` route:
 
-Additional primitives include `--printenv`, `--printenv-var NAME`, `--sleep
-SECONDS`, `--report NAME=EXPRESSION`, `--boot [COMMAND]`, and `--reset`.
-`printenv` output goes to the board's serial console unless you redirect it into
-memory and upload it with `tftpput`. Uploads are captured in memory by the
-default CLI and summarized when the process exits. To persist uploads to disk,
-start the server with `--upload-dir`:
+```toml
+[server]
+scriptfile = "script.py"
+upload = "/tmp/openipc-tftp-upload"
+address = "::"
+port = 6969
+
+[env]
+cmdtftp = "tftpboot"
+ramvar = "baseaddr"
+
+[cam123]
+script = "boot_nfs"
+
+[default]
+script = "default"
+```
+
+`[server]` controls daemon settings. Supported keys include `scriptfile`,
+`upload` or `upload_dir`, `address`, `port`, `retries`, `timeout`, and
+`log_level`. `[env]` provides base environment values for scripts. The daemon
+uses `[env].cmdtftp` when it generates follow-up download commands and expands
+`[env].ramvar` as a U-Boot variable reference, for example `ramvar = "baseaddr"`
+becomes `${baseaddr}`.
+
+Each route section names a Python function from `scriptfile`. The function is
+called as:
+
+```python
+def default(uboot, ident, path):
+    env = uboot.get_env()
+    uboot.send_noreply(f"echo booting {ident} from {path}")
+```
+
+The first argument exposes:
+
+- `get_env()`: exports the target U-Boot environment with `tftpput`, receives
+  it, and returns `[env]` merged with target values. Target values win.
+- `send(script)`: sends a script and appends a guarded follow-up RRQ for the
+  same `id=` and path.
+- `send_noreply(script)`: sends a script without appending another RRQ.
+
+Example U-Boot upload path used by `get_env()`:
 
 ```bash
-openipc-tftp --address 0.0.0.0 --port 6969 --upload-dir ./uploads
+tftpput ${baseaddr} ${filesize} "${serverip}:id=cam123/upload/env.txt"
 ```
 
-Example U-Boot upload path:
+That example writes under the configured upload directory as
+`<identifier>/upload/env.txt`. The `id=` prefix is removed from the directory
+name.
+
+For local testing with a desktop TFTP client:
 
 ```bash
-tftpput ${baseaddr} ${filesize} "${serverip}:ethaddr=${ethaddr}/upload/env.txt"
+tftp 127.0.0.1 6969 -c get 'id=cam123/' /tmp/boot.scr.uimg
 ```
 
-That example writes to `./uploads/<mac>/upload/env.txt`. Escaped MACs in the
-uploaded filename are decoded, and the `ethaddr=` prefix is removed from the
-directory name.
+U-Boot can request a literal `id=<identifier>/` filename, and follow-up scripts
+continue using that original identifier.
 
-The `--export-env [PATH]` helper queues a script that runs `env export -t
-${loadaddr}`, uploads `${loadaddr}`/`${filesize}` with `tftpput`, then continues
-the control loop. Use `--export-env-addr ADDRESS` if `${loadaddr}` is not a safe
-scratch address on your target.
-
-Some desktop TFTP clients interpret `host:file` syntax, so literal MAC colons
-in the remote filename can be misread as a hostname. For local testing with
-those clients, percent-encode the MAC colons:
+For multi-round-trip testing without a target, run the daemon in one shell and
+the helper client in another. The helper uses the system `tftp` executable for
+RRQ and WRQ transfers, prints each returned script, uploads a mock exported
+environment when `get_env()` asks for one, and follows generated continuation
+RRQs:
 
 ```bash
-tftp 127.0.0.1 6969 -c get 'ethaddr=aa%3Abb%3Acc%3Add%3Aee%3Aff/' /tmp/boot.scr.uimg
+openipc-tftp config.toml
+openipc-tftp-client 127.0.0.1 --port 6969 --id camfront --path /bootstrap \
+  --target-env hostname=camfront --target-env bootcmd='run boot_normal'
 ```
 
-U-Boot can request the literal `ethaddr=${ethaddr}/` filename.
+Use `--target-env-file env.txt` for larger mock environments and `--keep-dir
+./client-runs` to retain downloaded script images and generated upload files.
 
 To inspect a returned script image during testing:
 

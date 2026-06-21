@@ -63,7 +63,7 @@ def test_dynamic_content_server_opens_upload_sink(tmp_path):
 
     context = Context()
     upload = server._open_upload(
-        str(tmp_path / "ethaddr=aa:bb:cc:dd:ee:ff" / "upload" / "env.txt"),
+        str(tmp_path / "id=cam123" / "upload" / "env.txt"),
         context,
     )
     upload.write(b"payload")
@@ -72,9 +72,9 @@ def test_dynamic_content_server_opens_upload_sink(tmp_path):
     assert context.flock is False
     captured = upload_store.all()
     assert len(captured) == 1
-    assert captured[0].filename == "ethaddr=aa:bb:cc:dd:ee:ff/upload/env.txt"
+    assert captured[0].filename == "id=cam123/upload/env.txt"
     assert captured[0].body == b"payload"
-    assert upload_store.by_ethaddr["aa:bb:cc:dd:ee:ff"][0] == captured[0]
+    assert upload_store.by_client_id["cam123"][0] == captured[0]
 
 
 def test_dynamic_content_server_run_delegates_to_tftpy_listen(tmp_path):

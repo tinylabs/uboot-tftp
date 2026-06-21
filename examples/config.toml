@@ -1,0 +1,24 @@
+[server]
+scriptfile = "script.py"
+upload = "/tmp/openipc-tftp-upload"
+address = "0.0.0.0"
+#port = 6969
+port = 69
+retries = 3
+timeout = 5
+log_level = "INFO"
+
+[env]
+cmdtftp = "tftpboot"
+ramvar = "baseaddr"
+nfsserver = "truenas.lan"
+nfsroot = "/mnt/STORAGE/config/cameras/boot"
+
+[camfront]
+script = "boot_nfs"
+
+[cam-test]
+script = "test_script"
+
+[default]
+script = "default"

@@ -33,6 +33,7 @@ dev = [
 
 [project.scripts]
 openipc-tftp = "openipc_tftp.cli:main"
+openipc-tftp-client = "openipc_tftp.test_client:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

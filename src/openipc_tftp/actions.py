@@ -7,6 +7,7 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 from threading import RLock
 
+from .protocol import normalize_client_id
 from .sessions import InMemorySessionStore, UBootAction
 
 UBOOT_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_#.-]*$")
@@ -48,7 +49,7 @@ def validate_tftp_path(path: str) -> str:
 
 
 class UBootActionQueue:
-    """Queue actions globally or for a specific client ethaddr."""
+    """Queue actions globally or for a specific client identifier."""
 
     def __init__(self, sessions: InMemorySessionStore) -> None:
         self._sessions = sessions
@@ -56,9 +57,9 @@ class UBootActionQueue:
         self._targeted_actions: dict[str, deque[UBootAction]] = defaultdict(deque)
         self._lock = RLock()
 
-    def get_uboot_var(self, name: str, ethaddr: str | None = None) -> UBootAction:
+    def get_uboot_var(self, name: str, client_id: str | None = None) -> UBootAction:
         action = UBootAction(kind="get_var", name=validate_uboot_var_name(name))
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
     def set_uboot_var(
@@ -67,7 +68,7 @@ class UBootActionQueue:
         value: str,
         *,
         saveenv: bool = False,
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
         action = UBootAction(
             kind="set_var",
@@ -75,12 +76,12 @@ class UBootActionQueue:
             value=value,
             saveenv=saveenv,
         )
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
-    def run_uboot_var(self, name: str, ethaddr: str | None = None) -> UBootAction:
+    def run_uboot_var(self, name: str, client_id: str | None = None) -> UBootAction:
         action = UBootAction(kind="run_var", name=validate_uboot_var_name(name))
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
     def run_uboot_commands(
@@ -88,7 +89,7 @@ class UBootActionQueue:
         commands: Iterable[str],
         *,
         name: str = "inline",
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
         action = UBootAction(
             kind="run_commands",
@@ -97,42 +98,42 @@ class UBootActionQueue:
         )
         if not action.commands:
             raise ValueError("run_uboot_commands requires at least one command")
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
     def printenv(
         self,
         names: Iterable[str] = (),
         *,
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
         action = UBootAction(
             kind="printenv",
             name="printenv",
             commands=tuple(validate_uboot_var_name(name) for name in names),
         )
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
-    def reset(self, ethaddr: str | None = None) -> UBootAction:
+    def reset(self, client_id: str | None = None) -> UBootAction:
         action = UBootAction(kind="reset", name="reset")
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
-    def boot(self, command: str = "boot", ethaddr: str | None = None) -> UBootAction:
+    def boot(self, command: str = "boot", client_id: str | None = None) -> UBootAction:
         action = UBootAction(
             kind="boot",
             name="boot",
             value=validate_uboot_command(command),
         )
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
-    def sleep(self, seconds: int, ethaddr: str | None = None) -> UBootAction:
+    def sleep(self, seconds: int, client_id: str | None = None) -> UBootAction:
         if seconds < 0:
             raise ValueError("sleep seconds must be non-negative")
         action = UBootAction(kind="sleep", name="sleep", value=str(seconds))
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
     def report(
@@ -140,18 +141,18 @@ class UBootActionQueue:
         name: str,
         expression: str,
         *,
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
         action = UBootAction(
             kind="report",
             name=validate_uboot_var_name(name),
             value=expression,
         )
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
-    def probe(self, ethaddr: str | None = None) -> list[UBootAction]:
-        actions = [self.get_uboot_var(name, ethaddr=ethaddr) for name in PROBE_VARS]
+    def probe(self, client_id: str | None = None) -> list[UBootAction]:
+        actions = [self.get_uboot_var(name, client_id=client_id) for name in PROBE_VARS]
         return actions
 
     def export_env(
@@ -159,32 +160,32 @@ class UBootActionQueue:
         *,
         path: str = "upload/env.txt",
         address: str = "${loadaddr}",
-        ethaddr: str | None = None,
+        client_id: str | None = None,
     ) -> UBootAction:
         action = UBootAction(
             kind="export_env",
             name=validate_tftp_path(path),
             value=validate_uboot_command(address),
         )
-        self.queue(action, ethaddr=ethaddr)
+        self.queue(action, client_id=client_id)
         return action
 
-    def queue(self, action: UBootAction, ethaddr: str | None = None) -> None:
+    def queue(self, action: UBootAction, client_id: str | None = None) -> None:
         with self._lock:
-            if ethaddr is None:
+            if client_id is None:
                 self._global_actions.append(action)
             else:
-                self._targeted_actions[ethaddr.lower()].append(action)
+                self._targeted_actions[normalize_client_id(client_id)].append(action)
 
-    def next_action(self, ethaddr: str) -> UBootAction | None:
-        ethaddr = ethaddr.lower()
+    def next_action(self, client_id: str) -> UBootAction | None:
+        client_id = normalize_client_id(client_id)
         with self._lock:
-            targeted = self._targeted_actions[ethaddr]
+            targeted = self._targeted_actions[client_id]
             if targeted:
                 return targeted.popleft()
             if self._global_actions:
                 return self._global_actions.popleft()
-        return self._sessions.next_action(ethaddr)
+        return self._sessions.next_action(client_id)
 
     def load_global_actions(self, actions: Iterable[UBootAction]) -> None:
         with self._lock:
