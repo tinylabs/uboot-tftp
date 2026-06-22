@@ -20,6 +20,7 @@ DOWNLOAD_RE = re.compile(
     r"\b(?P<command>[A-Za-z0-9_]+)\s+\$\{[^}]+\}\s+"
     r'"(?P<server>[^":]+):(?P<remote>id=[^"]+)"'
 )
+UBOOT_VAR_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,7 @@ def run_client(config: ClientConfig, client_factory=TftpClient) -> None:
 
     with workdir as directory_name:
         directory = Path(directory_name)
+        env = _initial_env(config)
         remote = f"id={config.client_id}{config.path}"
         for round_number in range(1, config.rounds + 1):
             image_path = directory / f"round-{round_number}.uimg"
@@ -136,19 +138,21 @@ def run_client(config: ClientConfig, client_factory=TftpClient) -> None:
             _download(client_factory, config, remote, image_path)
             script = extract_script(image_path).decode("utf-8", errors="replace")
             _print_script(script)
+            _update_env_from_script(script, env, config)
             actions = parse_flow_actions(script)
             _echo_non_transfer_commands(script)
 
             if actions.uploads:
                 for upload in actions.uploads:
+                    remote_upload = _substitute_uboot_vars(upload.remote, env)
                     print(
-                        f"WRQ {round_number}: {upload.remote} "
+                        f"WRQ {round_number}: {remote_upload} "
                         f"({upload.size} bytes via {upload.command})"
                     )
-                    _upload_dummy(client_factory, config, upload)
-                next_remote = choose_next_remote(actions, prefer_recv="ok")
+                    _upload_dummy(client_factory, config, upload, remote_upload)
+                next_remote = choose_next_remote(actions, env, prefer_recv="ok")
             else:
-                next_remote = choose_next_remote(actions)
+                next_remote = choose_next_remote(actions, env)
 
             if next_remote is None:
                 print("No continuation RRQ found; stopping.")
@@ -181,13 +185,17 @@ def parse_flow_actions(script: str) -> FlowActions:
     return FlowActions(uploads=uploads, downloads=downloads)
 
 
-def choose_next_remote(actions: FlowActions, prefer_recv: str | None = None) -> str | None:
+def choose_next_remote(
+    actions: FlowActions,
+    env: dict[str, str],
+    prefer_recv: str | None = None,
+) -> str | None:
     if prefer_recv is not None:
         marker = f"/recv={prefer_recv}"
         for download in actions.downloads:
             if marker in download.remote:
-                return download.remote
-    return actions.downloads[0].remote if actions.downloads else None
+                return _substitute_uboot_vars(download.remote, env)
+    return _substitute_uboot_vars(actions.downloads[0].remote, env) if actions.downloads else None
 
 
 def _download(client_factory, config: ClientConfig, remote: str, output: Path) -> None:
@@ -195,7 +203,12 @@ def _download(client_factory, config: ClientConfig, remote: str, output: Path) -
     client.download(remote, str(output), timeout=config.timeout, retries=config.retries)
 
 
-def _upload_dummy(client_factory, config: ClientConfig, upload: UploadAction) -> None:
+def _upload_dummy(
+    client_factory,
+    config: ClientConfig,
+    upload: UploadAction,
+    remote: str,
+) -> None:
     payload = _build_dummy_env_export(config, upload.size)
     client = client_factory(config.host, port=config.port)
     with tempfile.NamedTemporaryFile("w+b") as fileobj:
@@ -203,7 +216,7 @@ def _upload_dummy(client_factory, config: ClientConfig, upload: UploadAction) ->
         fileobj.flush()
         fileobj.seek(0)
         client.upload(
-            upload.remote,
+            remote,
             fileobj,
             timeout=config.timeout,
             retries=config.retries,
@@ -241,6 +254,36 @@ def _parse_dummy_byte(value: str) -> int:
 
 
 def _build_dummy_env_export(config: ClientConfig, size: int) -> bytes:
+    payload = _build_dummy_env_export_unpadded(config)
+    if len(payload) >= size:
+        return payload[:size]
+    return payload + (b"\0" * (size - len(payload)))
+
+
+def _initial_env(config: ClientConfig) -> dict[str, str]:
+    return {
+        "bootcmd": f"echo boot {config.client_id}",
+        "ethaddr": f"02:00:00:00:00:{config.dummy_byte:02x}",
+        "hostname": config.client_id,
+        "ipaddr": "192.168.1.50",
+        "serverip": config.host,
+    }
+
+
+def _update_env_from_script(script: str, env: dict[str, str], config: ClientConfig) -> None:
+    if "env export -t " in script:
+        env["filesize"] = str(len(_build_dummy_env_export_unpadded(config)))
+
+
+def _substitute_uboot_vars(value: str, env: dict[str, str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return env.get(name, match.group(0))
+
+    return UBOOT_VAR_RE.sub(replace, value)
+
+
+def _build_dummy_env_export_unpadded(config: ClientConfig) -> bytes:
     text = "\0".join(
         (
             f"bootcmd=echo boot {config.client_id}",
@@ -250,10 +293,7 @@ def _build_dummy_env_export(config: ClientConfig, size: int) -> bytes:
             f"serverip={config.host}",
         )
     ) + "\0"
-    payload = text.encode("utf-8")
-    if len(payload) >= size:
-        return payload[:size]
-    return payload + (b"\0" * (size - len(payload)))
+    return text.encode("utf-8")
 
 
 class _StaticWorkdir:

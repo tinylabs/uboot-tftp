@@ -29,6 +29,7 @@ class _ExecutionRequest:
     script: str
     final: bool
     receive_size: int | None = None
+    return_keys: tuple[str, ...] = ()
 
     @property
     def expects_upload(self) -> bool:
@@ -68,14 +69,23 @@ class SessionHandle:
             return self.session.env.get(key, default)
         return self.session.env[key]
 
+    @property
+    def env(self) -> dict[str, str]:
+        return self.session.public_env
+
     async def exec(
         self,
         script: str | Iterable[str],
         *,
         final: bool = False,
+        keys: Iterable[str] = (),
     ) -> None:
         await _ExecutionAwaitable(
-            _ExecutionRequest(script=_join_script_lines(script), final=final)
+            _ExecutionRequest(
+                script=_join_script_lines(script),
+                final=final,
+                return_keys=_normalize_return_keys(keys),
+            )
         )
 
     async def exec_recv(
@@ -84,6 +94,7 @@ class SessionHandle:
         sz: int,
         *,
         final: bool = False,
+        keys: Iterable[str] = (),
     ) -> bytes:
         if final:
             raise ValueError("exec_recv(..., final=True) is not supported")
@@ -92,6 +103,7 @@ class SessionHandle:
                 script=_join_script_lines(script),
                 final=False,
                 receive_size=sz,
+                return_keys=_normalize_return_keys(keys),
             )
         )
         if result is None:
@@ -142,8 +154,8 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session.record_rrq(parsed)
         session.server_ip = _get_local_ip(str(request.peer[0]))
         route = self._route_for(parsed.client_id)
-        session.env = dict(self.config.env)
-        session.env.update(route.env)
+        session.env = _session_env(self.config.env, route.env, parsed)
+        session.public_env = _public_env(session.env)
         handle = SessionHandle(
             provider=self,
             session=session,
@@ -153,12 +165,11 @@ class ScriptedSessionProvider(DynamicContentProvider):
         function = getattr(self._module, route.script, None)
         if not callable(function):
             raise ValueError(f"script function not found: {route.script}")
-        session.env = _session_env(self.config.env, route.env, parsed)
         handler = function(
             handle,
             parsed.client_id,
             _command_from_segments(parsed.segments),
-            _public_env(session.env),
+            session.public_env,
         )
         if not inspect.iscoroutine(handler):
             raise TypeError("session handlers must be async functions")
@@ -170,6 +181,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
         if parsed.values.get("token") != session.current_token:
             raise FileNotFoundError(f"invalid session token for {parsed.client_id!r}")
         session.record_rrq(parsed)
+        _merge_continuation_values(session, parsed)
         if session.handler is None:
             raise FileNotFoundError(f"session has no active handler: {parsed.client_id!r}")
         if session.pending_receive is not None:
@@ -220,14 +232,19 @@ class ScriptedSessionProvider(DynamicContentProvider):
                 size=instruction.receive_size or 0,
             )
             session.phase = "await_upload"
-            script = self._append_receive(script, session)
+            script = self._append_receive(script, session, instruction.return_keys)
         elif instruction.final:
             session.phase = "complete"
             self.sessions.discard(session.client_id)
         else:
             session.current_token = _new_token()
             session.phase = "await_rrq"
-            script = self._append_continue(script, session, recv_status=None)
+            script = self._append_continue(
+                script,
+                session,
+                recv_status=None,
+                return_keys=instruction.return_keys,
+            )
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
 
     def _append_continue(
@@ -236,12 +253,14 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session: ClientSession,
         *,
         recv_status: str | None,
+        return_keys: tuple[str, ...] = (),
     ) -> str:
         if session.current_token is None:
             raise RuntimeError("missing continuation token")
         path = f"id={session.client_id}/token={session.current_token}"
         if recv_status is not None:
             path = f"{path}/recv={recv_status}"
+        path = _append_return_keys(path, return_keys)
         command = (
             f'if {session.env["cmdtftp"]} ${{{session.env["rambase"]}}} '
             f'"{session.server_ip}:{path}"; '
@@ -250,13 +269,28 @@ class ScriptedSessionProvider(DynamicContentProvider):
         )
         return _join_script_lines((script, command))
 
-    def _append_receive(self, script: str, session: ClientSession) -> str:
+    def _append_receive(
+        self,
+        script: str,
+        session: ClientSession,
+        return_keys: tuple[str, ...],
+    ) -> str:
         pending = session.pending_receive
         if pending is None:
             raise RuntimeError("missing pending receive state")
         upload_remote = f"id={session.client_id}/token={pending.token}{pending.upload_path}"
-        success = self._append_continue(script="", session=session, recv_status="ok")
-        failure = self._append_continue(script="", session=session, recv_status="failed")
+        success = self._append_continue(
+            script="",
+            session=session,
+            recv_status="ok",
+            return_keys=return_keys,
+        )
+        failure = self._append_continue(
+            script="",
+            session=session,
+            recv_status="failed",
+            return_keys=return_keys,
+        )
         receive = (
             f'if {session.env["cmdtftpput"]} ${{{session.env["rambase"]}}} {pending.size} '
             f'"{session.server_ip}:{upload_remote}"; '
@@ -332,6 +366,31 @@ def _session_env(
 def _public_env(env: dict[str, str]) -> dict[str, str]:
     hidden = {"rambase", "cmdtftp", "cmdtftpput"}
     return {key: value for key, value in env.items() if key not in hidden}
+
+
+def _merge_continuation_values(session: ClientSession, parsed: ParsedPath) -> None:
+    for key, value in parsed.values.items():
+        if key in {"token", "recv"}:
+            continue
+        session.env[key] = value
+        if key not in {"rambase", "cmdtftp", "cmdtftpput"}:
+            session.public_env[key] = value
+
+
+def _normalize_return_keys(keys: Iterable[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for key in keys:
+        name = str(key)
+        if not name or any(character in name for character in "/=\r\n"):
+            raise ValueError(f"invalid return key: {key!r}")
+        normalized.append(name)
+    return tuple(normalized)
+
+
+def _append_return_keys(path: str, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        path = f"{path}/{key}=${{{key}}}"
+    return path
 
 
 def _get_local_ip(peer_hint: str) -> str:

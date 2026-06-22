@@ -133,6 +133,37 @@ def test_exec_appends_internal_continuation_rrq(tmp_path):
     assert "token=" not in second
 
 
+def test_exec_can_request_return_keys_for_next_rrq(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo export env'], keys=['filesize'])",
+                "    await tftp.exec([f'echo filesize {env[\"filesize\"]}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert '/filesize=${filesize}"' in first
+
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={token}/filesize=1235"))
+    )
+    assert "echo filesize 1235" in second
+
+
 def test_target_route_overrides_transport_env_for_new_session(tmp_path):
     script = tmp_path / "script.py"
     script.write_text(
@@ -197,10 +228,10 @@ def test_exec_recv_returns_uploaded_bytes_on_followup_rrq(tmp_path):
         "\n".join(
             (
                 "async def handler(tftp, ident, cmd, env):",
-                "    data = await tftp.exec_recv(['echo send upload'], 8)",
+                "    data = await tftp.exec_recv(['echo send upload'], 8, keys=['filesize'])",
                 "    parsed = tftp.parse_env_export(data)",
                 "    tftp.write_file('saved/dump.bin', data)",
-                "    await tftp.exec([f'echo done {parsed[\"ethaddr\"]}'], final=True)",
+                "    await tftp.exec([f'echo done {parsed[\"ethaddr\"]} {env[\"filesize\"]}'], final=True)",
                 "",
                 "async def default(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo default'], final=True)",
@@ -217,7 +248,10 @@ def test_exec_recv_returns_uploaded_bytes_on_followup_rrq(tmp_path):
     assert token_match is not None
     token = token_match.group(1)
     assert f'tftpput ${{loadaddr}} 8 "127.0.0.1:id=cam123/token={token}/upload.bin"' in first
-    assert f'tftpboot ${{loadaddr}} "127.0.0.1:id=cam123/token={token}/recv=ok"' in first
+    assert (
+        f'tftpboot ${{loadaddr}} '
+        f'"127.0.0.1:id=cam123/token={token}/recv=ok/filesize=${{filesize}}"' in first
+    )
 
     upload = uploads.open(
         UploadRequest(
@@ -229,8 +263,10 @@ def test_exec_recv_returns_uploaded_bytes_on_followup_rrq(tmp_path):
     upload.write(b"ethaddr=00:11:22:33:44:55\x00")
     upload.close()
 
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/recv=ok")))
-    assert "echo done 00:11:22:33:44:55" in second
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={token}/recv=ok/filesize=1235"))
+    )
+    assert "echo done 00:11:22:33:44:55 1235" in second
     assert (tmp_path / "static" / "saved" / "dump.bin").read_bytes() == (
         b"ethaddr=00:11:22:33:44:55\x00"
     )

@@ -5,6 +5,7 @@ from openipc_tftp.test_client import (
     FlowActions,
     UploadAction,
     _build_dummy_env_export,
+    _build_dummy_env_export_unpadded,
     choose_next_remote,
     main,
     parse_flow_actions,
@@ -54,7 +55,7 @@ def test_parse_flow_actions_finds_upload_and_continuation():
             remote="id=cam123/token=abc123/recv=failed",
         ),
     )
-    assert choose_next_remote(actions, prefer_recv="ok") == "id=cam123/token=abc123/recv=ok"
+    assert choose_next_remote(actions, {}, prefer_recv="ok") == "id=cam123/token=abc123/recv=ok"
 
 
 def test_run_client_follows_rrq_wrq_flow(capsys, tmp_path):
@@ -130,4 +131,37 @@ def test_choose_next_remote_falls_back_to_first_download():
         ),
     )
 
-    assert choose_next_remote(actions) == "id=cam123/token=abc123"
+    assert choose_next_remote(actions, {}) == "id=cam123/token=abc123"
+
+
+def test_choose_next_remote_substitutes_filesize_variable():
+    actions = FlowActions(
+        uploads=(),
+        downloads=(
+            DownloadAction(
+                command="tftpboot",
+                server="127.0.0.1",
+                remote="id=cam123/token=abc123/filesize=${filesize}",
+            ),
+        ),
+    )
+
+    assert choose_next_remote(actions, {"filesize": "106"}) == (
+        "id=cam123/token=abc123/filesize=106"
+    )
+
+
+def test_dummy_env_export_unpadded_length_matches_expected_filesize():
+    config = ClientConfig(
+        host="127.0.0.1",
+        port=6969,
+        client_id="cam123",
+        path="/bootstrap",
+        rounds=3,
+        timeout=5,
+        retries=3,
+        keep_dir=None,
+        dummy_byte=ord("Z"),
+    )
+
+    assert len(_build_dummy_env_export_unpadded(config)) == 106
