@@ -143,7 +143,7 @@ class SessionHandle:
         if size_text is None:
             raise ValueError(f"missing {size_key!r} after environment export")
         try:
-            size = int(size_text, 0)
+            size = _parse_uboot_number(size_text)
         except ValueError as error:
             raise ValueError(f"invalid {size_key!r} value: {size_text!r}") from error
         data = await self.exec_recv(upload_script, size)
@@ -462,6 +462,13 @@ def _format_uboot_number(value: int | str) -> str:
     if isinstance(value, int):
         return hex(value)
     return value
+
+
+def _parse_uboot_number(value: str) -> int:
+    text = value.strip()
+    if text.lower().startswith("0x"):
+        return int(text, 16)
+    return int(text, 16)
 
 
 def _get_local_ip(peer_hint: str) -> str:

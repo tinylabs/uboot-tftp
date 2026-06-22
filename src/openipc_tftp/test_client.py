@@ -272,7 +272,7 @@ def _initial_env(config: ClientConfig) -> dict[str, str]:
 
 def _update_env_from_script(script: str, env: dict[str, str], config: ClientConfig) -> None:
     if "env export -t " in script:
-        env["filesize"] = str(len(_build_dummy_env_export_unpadded(config)))
+        env["filesize"] = format(len(_build_dummy_env_export_unpadded(config)), "x")
 
 
 def _substitute_uboot_vars(value: str, env: dict[str, str]) -> str:

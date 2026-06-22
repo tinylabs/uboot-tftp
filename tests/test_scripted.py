@@ -458,7 +458,7 @@ def test_fetch_env_helper_exports_receives_and_parses_environment(tmp_path):
     assert second_token_match is not None
     second_token = second_token_match.group(1)
     assert (
-        f'tftpput ${{loadaddr}} 0x4d3 "127.0.0.1:id=cam123/token={second_token}/upload.bin"'
+        f'tftpput ${{loadaddr}} 0x1235 "127.0.0.1:id=cam123/token={second_token}/upload.bin"'
         in second
     )
 
