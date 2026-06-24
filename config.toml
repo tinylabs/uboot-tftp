@@ -19,4 +19,4 @@ kernel = 'uImage.${soc}'
 #rootfs = '/mnt/STORAGE/config/camera/boot/rootfs.cam123'
 
 [default]
-script = "install"
+script = "default"
