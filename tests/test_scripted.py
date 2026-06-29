@@ -13,7 +13,7 @@ def script_from_result(result):
     return extract_script_payload(result.body).decode("utf-8")
 
 
-TOKEN_RE = re.compile(r'id=cam123/token=([^"/]+)')
+TOKEN_RE = re.compile(r'id=[^/]+/token=([^"/]+)')
 
 
 def request(filename):
@@ -22,6 +22,21 @@ def request(filename):
         peer=("127.0.0.1", 12345),
         server_addr=("127.0.0.1", 6969),
         options={"mode": "octet"},
+    )
+
+
+def preflight_session(provider, filename):
+    script = script_from_result(provider.fetch(request(filename)))
+    token_match = TOKEN_RE.search(script)
+    assert token_match is not None
+    client_id = filename.split("/", 1)[0].removeprefix("id=")
+    return client_id, script, token_match.group(1)
+
+
+def start_session_script(provider, filename):
+    client_id, _, token = preflight_session(provider, filename)
+    return script_from_result(
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true"))
     )
 
 
@@ -70,10 +85,8 @@ def test_scripted_provider_routes_by_client_id_and_passes_path(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    assert "echo known cam123 boot -" in script_from_result(provider.fetch(request("id=cam123/boot")))
-    assert "echo default other123 boot" in script_from_result(
-        provider.fetch(request("id=other123/boot"))
-    )
+    assert "echo known cam123 boot -" in start_session_script(provider, "id=cam123/boot")
+    assert "echo default other123 boot" in start_session_script(provider, "id=other123/boot")
 
 
 def test_scripted_provider_serves_static_file_for_bare_rrq(tmp_path):
@@ -120,9 +133,68 @@ def test_session_handle_exposes_absolute_static_root(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    script = script_from_result(provider.fetch(request("id=cam123/boot")))
+    script = start_session_script(provider, "id=cam123/boot")
 
     assert f"echo root {tmp_path / 'static'}" in script
+
+
+def test_initial_session_runs_hush_preflight_before_user_handler(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo handler ran'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    client_id, preflight, token = preflight_session(provider, "id=cam123/bootstrap")
+
+    assert client_id == "cam123"
+    assert "Checking hush shell..." in preflight
+    assert 'if true; then setenv hush_shell true; fi' in preflight
+    assert f'/hush_shell=${{hush_shell}}"' in preflight
+    assert "echo handler ran" not in preflight
+
+    second = script_from_result(
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true"))
+    )
+    assert "echo handler ran" in second
+
+
+def test_initial_session_fails_when_hush_shell_is_unavailable(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo handler ran'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    client_id, _, token = preflight_session(provider, "id=cam123/bootstrap")
+    failure = script_from_result(provider.fetch(request(f"id={client_id}/token={token}")))
+
+    assert "U-Boot hush shell is required" in failure
+    assert "hush-compatible if/then support" in failure
+    assert "echo handler ran" not in failure
+    assert sessions.get("cam123") is None
 
 
 def test_exec_appends_internal_continuation_rrq(tmp_path):
@@ -144,7 +216,7 @@ def test_exec_appends_internal_continuation_rrq(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    first = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    first = start_session_script(provider, "id=cam123/bootstrap")
     assert "echo step1" in first
     first_token = TOKEN_RE.search(first)
     assert first_token is not None
@@ -175,7 +247,7 @@ def test_exec_can_request_return_keys_for_next_rrq(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    first = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    first = start_session_script(provider, "id=cam123/bootstrap")
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
@@ -231,7 +303,7 @@ def test_target_route_overrides_transport_env_for_new_session(tmp_path):
     uploads = InMemoryUploadStore(sessions)
     provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
 
-    first = script_from_result(provider.fetch(request("id=cam123/bootstrap/extra=rrq")))
+    first = start_session_script(provider, "id=cam123/bootstrap/extra=rrq")
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
@@ -265,7 +337,7 @@ def test_exec_recv_returns_uploaded_bytes_on_followup_rrq(tmp_path):
     uploads = InMemoryUploadStore(sessions)
     provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
 
-    first = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    first = start_session_script(provider, "id=cam123/bootstrap")
     assert "echo send upload" in first
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
@@ -328,7 +400,7 @@ def test_file_exists_checks_relative_path_under_tftp_root(tmp_path):
     sessions = InMemorySessionStore()
     provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=InMemoryUploadStore(sessions))
 
-    script = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    script = start_session_script(provider, "id=cam123/bootstrap")
 
     assert "echo exists True" in script
     assert "echo read payload" in script
@@ -357,7 +429,7 @@ def test_exec_recv_can_upload_from_relative_rambase_offset(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    first = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    first = start_session_script(provider, "id=cam123/bootstrap")
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
@@ -398,7 +470,7 @@ def test_exec_recv_can_be_caught_by_user_script(tmp_path):
     uploads = InMemoryUploadStore(sessions)
     provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
 
-    first = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    first = start_session_script(provider, "id=cam123/bootstrap")
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
@@ -424,8 +496,9 @@ def test_exec_recv_rejects_final_true(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
+    client_id, _, token = preflight_session(provider, "id=cam123/bootstrap")
     with pytest.raises(ValueError, match="final=True"):
-        provider.fetch(request("id=cam123/bootstrap"))
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true"))
 
 
 def test_initial_rrq_values_override_route_and_base_env(tmp_path):
@@ -453,9 +526,7 @@ def test_initial_rrq_values_override_route_and_base_env(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    script = script_from_result(
-        provider.fetch(request("id=cam123/bootstrap/host=rrq/mode=rrq-mode"))
-    )
+    script = start_session_script(provider, "id=cam123/bootstrap/host=rrq/mode=rrq-mode")
     assert "echo cmd bootstrap" in script
     assert "echo host rrq" in script
     assert "echo mode rrq-mode" in script
@@ -485,7 +556,7 @@ def test_transport_keys_are_removed_from_env_argument(tmp_path):
         config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
     )
 
-    script = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    script = start_session_script(provider, "id=cam123/bootstrap")
     assert "echo has_rambase False" in script
     assert "echo has_cmdtftp False" in script
     assert "echo has_cmdtftpput False" in script
@@ -510,7 +581,7 @@ def test_fetch_env_helper_exports_receives_and_parses_environment(tmp_path):
     uploads = InMemoryUploadStore(sessions)
     provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
 
-    first = script_from_result(provider.fetch(request("id=cam123/bootstrap")))
+    first = start_session_script(provider, "id=cam123/bootstrap")
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)

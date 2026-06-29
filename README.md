@@ -15,6 +15,8 @@ A session starts when the server receives an RRQ like:
 id=cam123/bootstrap
 ```
 
+Before the user handler runs, `uboot-tftp` performs an internal preflight to verify that the target U-Boot has a hush-compatible shell. Session handlers only start after that check succeeds.
+
 The server creates a new session for `cam123` and calls the matching user handler from `script.py`. If no matching section exists in `config.toml`, the `[default]` handler is used.
 
 Session handlers are `async def` functions. They use these helpers:

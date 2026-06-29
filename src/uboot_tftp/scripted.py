@@ -16,6 +16,7 @@ from .mkimage import LegacyScriptImageCompiler
 from .protocol import ParsedPath, parse_request_path
 from .providers import ContentRequest, ContentResult, DynamicContentProvider
 from .sessions import ClientSession, InMemorySessionStore, PendingReceive
+from .ubootterm import uboot_err, uboot_msg, uboot_term_reset
 from .ubootenv import ubootenv_parse_export
 from .uploads import InMemoryUploadStore
 
@@ -203,25 +204,8 @@ class ScriptedSessionProvider(DynamicContentProvider):
         route = self._route_for(parsed.client_id)
         session.env = _session_env(self.config.env, route.env, parsed)
         session.public_env = _public_env(session.env)
-        handle = SessionHandle(
-            provider=self,
-            session=session,
-            parsed=parsed,
-            request=request,
-        )
-        function = getattr(self._module, route.entry_func, None)
-        if not callable(function):
-            raise ValueError(f"script function not found: {route.entry_func}")
-        handler = function(
-            handle,
-            parsed.client_id,
-            _command_from_segments(parsed.segments),
-            session.public_env,
-        )
-        if not inspect.iscoroutine(handler):
-            raise TypeError("session handlers must be async functions")
-        session.handler = handler
-        return self._advance_session(session, None)
+        session.preflight_pending = True
+        return self._preflight_result(session)
 
     def _resume_session(self, request: ContentRequest, parsed: ParsedPath) -> ContentResult:
         session = self.sessions.require(parsed.client_id)
@@ -229,6 +213,15 @@ class ScriptedSessionProvider(DynamicContentProvider):
             raise FileNotFoundError(f"invalid session token for {parsed.client_id!r}")
         session.record_rrq(parsed)
         _merge_continuation_values(session, parsed)
+        if session.preflight_pending:
+            session.preflight_pending = False
+            if session.env.get("hush_shell") != "true":
+                session.phase = "complete"
+                self.sessions.discard(session.client_id)
+                return ContentResult.from_bytes(
+                    self.compiler.compile(_ensure_newline(_hush_failure_script()))
+                )
+            session.handler = self._create_handler(session, request)
         if session.handler is None:
             raise FileNotFoundError(f"session has no active handler: {parsed.client_id!r}")
         if session.pending_receive is not None:
@@ -260,6 +253,43 @@ class ScriptedSessionProvider(DynamicContentProvider):
             self.sessions.discard(session.client_id)
             raise FileNotFoundError(str(error)) from error
         return self._result_from_instruction(session, instruction)
+
+    def _create_handler(
+        self,
+        session: ClientSession,
+        request: ContentRequest,
+    ):
+        initial_request = session.requests[0]
+        route = self._route_for(session.client_id)
+        handle = SessionHandle(
+            provider=self,
+            session=session,
+            parsed=initial_request,
+            request=request,
+        )
+        function = getattr(self._module, route.entry_func, None)
+        if not callable(function):
+            raise ValueError(f"script function not found: {route.entry_func}")
+        handler = function(
+            handle,
+            session.client_id,
+            _command_from_segments(initial_request.segments),
+            session.public_env,
+        )
+        if not inspect.iscoroutine(handler):
+            raise TypeError("session handlers must be async functions")
+        return handler
+
+    def _preflight_result(self, session: ClientSession) -> ContentResult:
+        session.current_token = _new_token()
+        session.phase = "await_rrq"
+        script = self._append_continue(
+            _hush_probe_script(),
+            session,
+            recv_status=None,
+            return_keys=("hush_shell",),
+        )
+        return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
 
     def _result_from_instruction(
         self,
@@ -410,6 +440,25 @@ def _join_script_lines(lines: str | Iterable[str]) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def _hush_probe_script() -> str:
+    return _join_script_lines(
+        (
+            uboot_term_reset(),
+            uboot_msg("Checking hush shell... ", nl=False, bold=True),
+            "if true; then setenv hush_shell true; fi",
+        )
+    )
+
+
+def _hush_failure_script() -> str:
+    return _join_script_lines(
+        (
+            uboot_err("U-Boot hush shell is required"),
+            uboot_msg("uboot-tftp requires hush-compatible if/then support", color="yellow"),
+        )
+    )
+
+
 def _ensure_newline(script: str) -> str:
     return script if script.endswith("\n") else f"{script}\n"
 
@@ -491,12 +540,12 @@ def _parse_uboot_number(value: str) -> int:
 
 
 def _get_local_ip(peer_hint: str) -> str:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        try:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.connect((peer_hint if "." in peer_hint else "8.8.8.8", 80))
             return sock.getsockname()[0]
-        except OSError:
-            return "127.0.0.1"
+    except OSError:
+        return "127.0.0.1"
 
 
 def _new_token() -> str:

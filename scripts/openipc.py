@@ -151,17 +151,6 @@ async def uboot_boot(tftp, delay: int=0):
         'boot'
     ], final=True)
 
-async def uboot_hush_check(tftp, env):
-    await tftp.exec ([
-        uboot_term_reset (),
-        uboot_msg ("Checking hush shell... ", nl=False, bold=True),
-        'if true; then setenv hush_shell true; fi',
-    ], keys = ['hush_shell'])
-    if env['hush_shell'] == 'true':
-        await tftp.exec([uboot_msg("OK")])
-    else:
-        await tftp.exec([uboot_err("Not supported")], final=True)
-
 ###
 ### MOVE ABOVE TO FRAMEWORK
 ###
@@ -391,7 +380,6 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     declaration.
     '''
 
-    await uboot_hush_check(tftp, tftp_env)
     match cmd:
         case 'install':
             await openipc_install (tftp, ident, cmd, tftp_env)
