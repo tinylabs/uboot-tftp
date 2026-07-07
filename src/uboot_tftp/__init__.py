@@ -7,7 +7,14 @@ from .protocol import ParsedPath, parse_request_path
 from .providers import CallableContentProvider, ContentRequest, ContentResult
 from .scripted import ScriptedSessionProvider, SessionHandle
 from .sessions import ClientSession, InMemorySessionStore
-from .ubootops import uboot_boot, uboot_exec_delay, uboot_nor_download, uboot_nor_probe, uboot_download_url
+from .ubootops import (
+    uboot_boot,
+    uboot_crc32,
+    uboot_download_url,
+    uboot_exec_delay,
+    uboot_nor_download,
+    uboot_nor_probe,
+)
 from .ubootenv import (
     EnvPartitionInfo,
     ubootenv_build,
@@ -19,6 +26,7 @@ from .ubootenv import (
 )
 from .ubootscript import (
     uboot_memcpy,
+    uboot_crc32_gen,
     uboot_memset,
     uboot_nor_erase,
     uboot_nor_read,
@@ -52,6 +60,8 @@ __all__ = [
     "SessionHandle",
     "ubootenv_patch",
     "uboot_memcpy",
+    "uboot_crc32",
+    "uboot_crc32_gen",
     "uboot_memset",
     "uboot_boot",
     "uboot_exec_delay",

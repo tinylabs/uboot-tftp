@@ -88,6 +88,12 @@ class SessionHandle:
     def env(self) -> dict[str, str]:
         return self.session.public_env
 
+    @property
+    def is_le(self) -> bool:
+        if self.session.is_le is None:
+            raise RuntimeError("endianness preflight has not completed")
+        return self.session.is_le
+
     async def exec(
         self,
         script: str | Iterable[str],
@@ -260,6 +266,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
                 return ContentResult.from_bytes(
                     self.compiler.compile(_ensure_newline(_hush_failure_script()))
                 )
+            session.is_le = session.env.get("_1") == "44"
             session.handler = self._create_handler(session, request)
         if session.handler is None:
             raise FileNotFoundError(f"session has no active handler: {parsed.client_id!r}")
@@ -323,10 +330,10 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session.current_token = _new_token()
         session.phase = "await_rrq"
         script = self._append_continue(
-            _hush_probe_script(),
+            _preflight_probe_script(session.env["rambase"]),
             session,
             recv_status=None,
-            return_keys=("hush_shell",),
+            return_keys=("hush_shell", "_1"),
         )
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
 
@@ -488,12 +495,18 @@ def _join_script_lines(lines: str | Iterable[str]) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _hush_probe_script() -> str:
+def _preflight_probe_script(rambase_var: str) -> str:
+    rambase = f"${{{rambase_var}}}"
     return _join_script_lines(
         (
             uboot_term_reset(),
             uboot_msg("Checking hush shell... ", bold=True),
             "if true; then setenv hush_shell true; fi",
+            f"setexpr.l tmp *{rambase}",
+            f"mw.l {rambase} 0x11223344 1",
+            f"setexpr.b _1 *{rambase}",
+            f"mw.l {rambase} ${{tmp}} 1",
+            "setenv tmp",
         )
     )
 

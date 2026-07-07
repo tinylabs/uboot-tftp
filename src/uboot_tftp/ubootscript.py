@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_#.-]*$")
-_TMP_COUNTER = itertools.count(1)
+_TMP_COUNTER = itertools.count(0)
 
 from uboot_tftp.ubootterm import RESTORE_CURSOR, CLEAR_REGION
 
@@ -160,8 +160,30 @@ def uboot_nor_gen_probe(
     script.append("fi;\n")
     return script
 
+
+def uboot_crc32_gen(
+    addr: int | str,
+    length: int | str,
+    *,
+    scratch: int | str,
+    result: str,
+) -> list[str]:
+    """Return a U-Boot snippet that computes CRC32 and stores the raw digest word."""
+
+    dest_var = _next_tmp("crc_dest")
+    saved_var = _next_tmp("crc_saved")
+    return [
+        f"setexpr.l {dest_var} {_format_number(scratch)}",
+        f"setexpr.l {saved_var} *${{{dest_var}}}",
+        f"crc32 {_format_number(addr)} {_format_number(length)} ${{{dest_var}}}",
+        f"setexpr.l {result} *${{{dest_var}}}",
+        f"mw.l ${{{dest_var}}} ${{{saved_var}}} 1",
+        f"setenv {saved_var}",
+        f"setenv {dest_var}",
+    ]
+
 def _next_tmp(kind: str) -> str:
-    return f"__uboot_tftp_{kind}_{next(_TMP_COUNTER)}"
+    return f"_{next(_TMP_COUNTER)}"
 
 
 def _normalize_base(tftp: Any, base: str | None) -> str:

@@ -10,15 +10,24 @@ import struct
 import json
 import re
 import random
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
-from typing import Any
+from typing import Any, TypedDict
 
 from uboot_tftp.ubootscript import *
 from uboot_tftp.ubootops import *
 from uboot_tftp.ubootterm import *
 from uboot_tftp.ubootenv import *
+
+
+class GithubAsset(TypedDict, total=False):
+    name: str
+    browser_download_url: str
+    content_type: str
+    size: int
+    updated_at: str
 
 
 class GithubJsonManifest:
@@ -62,27 +71,48 @@ class GithubJsonManifest:
             raise RuntimeError("manifest has not been loaded yet")
         return self._manifest
 
-    def assets(self) -> list[dict[str, Any]]:
+    def assets(self) -> list[GithubAsset]:
         manifest = self.manifest
         assets = manifest.get("assets", [])
         if not isinstance(assets, list):
             raise TypeError("manifest assets field must be a list")
         return [asset for asset in assets if isinstance(asset, dict)]
 
-    def find(self, *, match: Iterable[str]) -> dict[str, dict[str, Any]]:
+    def find(self, *, match: Iterable[str]) -> list[GithubAsset]:
         needles = [str(value) for value in match if str(value)]
         if not needles:
-            return {
-                str(asset.get("name", "")): asset
-                for asset in self.assets()
-                if str(asset.get("name", ""))
-            }
-        matched: dict[str, dict[str, Any]] = {}
-        for asset in self.assets():
-            name = str(asset.get("name", ""))
-            if all(needle in name for needle in needles):
-                matched[name] = asset
-        return matched
+            return [asset for asset in self.assets() if str(asset.get("name", ""))]
+        return [
+            asset
+            for asset in self.assets()
+            if (name := str(asset.get("name", ""))) and all(needle in name for needle in needles)
+        ]
+
+    async def download_asset(
+        self,
+        asset: GithubAsset,
+        *,
+        destination: str | None = None,
+    ) -> bytes:
+        url = str(asset.get("browser_download_url", "")).strip()
+        if not url:
+            raise ValueError("asset must include browser_download_url")
+
+        name = str(asset.get("name", "")).strip()
+        if not name:
+            raise ValueError("asset must include name")
+
+        filepath = destination or self._asset_destination(name)
+        await uboot_download_url(
+            self.tftp,
+            url=url,
+            filepath=filepath,
+            page_url=self.url,
+        )
+        return self.tftp.read_file(filepath)
+
+    def _asset_destination(self, name: str) -> str:
+        return f"{self.path}/{name}"
 
     async def load(self) -> dict[str, Any]:
         if self._manifest is not None:
@@ -99,6 +129,7 @@ class GithubJsonManifest:
             },
         )
         self._manifest = json.loads(payload)
+        return self._manifest
 
     
 async def openipc_download_binary(tftp, vendor: str, soc: str, size_mb: int, fw: str) -> bytes:
@@ -348,48 +379,6 @@ async def uboot_nomatch(tftp, ident: str, cmd: str, cmd_list: list=None, final: 
         uboot_msg()
     ], final=final)
 
-# Move to framework preflight
-async def is_le(tftp, tftp_env) -> bool:
-    await tftp.exec([
-        f'setexpr.l tmp *{tftp.rambase}',
-        f'mw.l {tftp.rambase} 0x11223344 1',
-        f'setexpr.b _1 *{tftp.rambase}',
-        f'mw.l {tftp.rambase} ${{tmp}} 1',
-        'setenv tmp',
-    ], keys=['_1'])
-    return True if tftp_env['_1'] == '44' else False
-
-def crc32_script(addr: int, length: int, scratch: str, result: str) -> list[str]:
-    return [
-        f'setexpr.l dest {scratch}',
-        'setexpr.l tmp *${dest}',        
-        f'crc32 {hex(addr)} {hex(length)} ${{dest}}',
-        f'setexpr.l {result} *${{dest}}',
-        'mw.l ${dest} ${tmp} 1',
-        'setenv tmp; setenv dest',
-    ]
-
-async def crc32(tftp,
-                env: dict[str, str],
-                ranges: list[(int, int)],
-                le=True,
-    ) -> list[int]:
-    """ Calculate multiple CRCs in one call """
-    
-    res, cmds = [], []
-    keys = ['_' + str(x) for x in range (len(ranges))]
-    for _, (addr, length) in enumerate (ranges):
-        cmds += crc32_script (addr, length, scratch=tftp.rambase, result=keys[_])
-    await tftp.exec(cmds, keys=keys)
-    for key in keys:
-        crc_raw = bytes.fromhex(env[key].zfill(8))
-        if le:
-            res.append (struct.unpack("<I", crc_raw)[0])
-        else:
-            res.append (struct.unpack(">I", crc_raw)[0])
-    return res
-
-
 Range = tuple[int, int]
 
 def batched(items: list[Range], size: int) -> list[list[Range]]:
@@ -441,8 +430,8 @@ async def find_active(
         changed: list[Range] = []
 
         for batch in batched(cur, max_ranges):
-            res1 = await crc32(tftp, tftp_env, batch, True)
-            res2 = await crc32(tftp, tftp_env, batch, True)
+            res1 = await uboot_crc32(tftp, batch)
+            res2 = await uboot_crc32(tftp, batch)
 
             changed.extend(
                 r
@@ -506,12 +495,10 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             manifest = GithubJsonManifest(tftp, path=path)
             await manifest.load ()
             matches = manifest.find (match=[soc])
-            for k, v in matches.items():
-                name = k
-                await uboot_download_url(
-                    tftp,
-                    url=v["browser_download_url"],
-                    filepath=f'{path}/{soc}/{name}'
+            for asset in matches:
+                await manifest.download_asset(
+                    asset,
+                    destination=f"{path}/{soc}/{asset['name']}",
                 )
             await tftp.exec ([uboot_msg ()], final=True)
 
@@ -525,12 +512,6 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 (0x46000000, 0x1000000), # Stable
                 (0x47000000, 0x1000000), # TLBs, stack, etc (changes crc)
             ]
-            '''
-            ranges = [
-                (0x40000000, 0x1000000),
-                (0x41000000, 0x1000000),
-            ]
-            '''
             res = await find_active(tftp, tftp_env, ranges)
             cmds = [uboot_msg(f'{hex(addr)}:{hex(length)}', color='yellow')
                     for _, (addr, length) in enumerate(res)]
@@ -547,12 +528,9 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 (0x47000000, 0x1000000), # TLBs, stack, etc (changes crc)
             ]
             
-            # Check endian so we know how to unpack crc result
-            # TODO: Preflight le check, store in tftp object
-            le = await is_le(tftp, tftp_env)
-            res = await crc32(tftp, tftp_env, ranges, le)                
+            res = await uboot_crc32(tftp, ranges)
             res =  [hex(x) for x in res]
-            cmds = [uboot_msg(f'{hex(addr)}:{hex(addr+length-1)} => {res[_]}', color='yellow')
+            cmds = [uboot_msg(f'{hex(addr)}:{hex(addr+length-1)} => {res[_]}')
                     for _, (addr, length) in enumerate(ranges)]
             await tftp.exec(cmds, final=True)
 

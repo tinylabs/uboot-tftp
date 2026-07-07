@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+import struct
 from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
-from .ubootscript import uboot_memset, uboot_nor_gen_probe, uboot_nor_read
-from .ubootterm import uboot_msg, uboot_progress, uboot_status, uboot_status_complete
+from .ubootscript import (
+    uboot_crc32_gen,
+    uboot_memset,
+    uboot_nor_gen_probe,
+    uboot_nor_read,
+)
+from .ubootterm import uboot_err, uboot_msg, uboot_progress, uboot_status, uboot_status_complete
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _download_progress_lines(artifact) -> str:
@@ -152,8 +161,65 @@ async def uboot_boot(tftp: Any, *, delay: int = 0) -> None:
     )
 
 
+async def uboot_crc32(
+    tftp: Any,
+    ranges: Iterable[tuple[int, int]],
+    *,
+    scratch: int | str | None = None,
+    little_endian: bool | None = None,
+    pre_cmds: Iterable[str] = (),
+    post_cmds: Iterable[str] = (),
+    final: bool = False,
+    key_prefix: str = "c",
+) -> list[int]:
+    """Compute CRC32 values for one or more memory ranges."""
+
+    batch = list(ranges)
+    if not batch:
+        return []
+    if len(batch) > 6:
+        msg = "uboot_crc32 supports at most 6 ranges per call"
+        LOGGER.error(
+            "Rejecting CRC32 request with too many ranges: count=%d max=6 ident=%s",
+            len(batch),
+            getattr(tftp, "ident", None),
+        )
+        await tftp.exec([uboot_err(msg)], final=True)
+        raise ValueError(msg)
+    endian = _resolve_little_endian(tftp, little_endian)
+    scratch_addr = scratch if scratch is not None else tftp.rambase
+    keys = [f"{key_prefix}{index}" for index in range(len(batch))]
+    script = [*_normalize_cmds(pre_cmds)]
+    for index, (addr, length) in enumerate(batch):
+        script.extend(
+            uboot_crc32_gen(
+                addr,
+                length,
+                scratch=scratch_addr,
+                result=keys[index],
+            )
+        )
+    script.extend(_normalize_cmds(post_cmds))
+    await tftp.exec(script, keys=keys, final=final)
+
+    values: list[int] = []
+    for key in keys:
+        raw = bytes.fromhex(tftp.env[key].zfill(8))
+        values.append(struct.unpack("<I" if endian else ">I", raw)[0])
+    return values
+
+
 def _normalize_cmds(cmds: Iterable[str]) -> list[str]:
     return [cmd for cmd in cmds if cmd]
+
+
+def _resolve_little_endian(tftp: Any, little_endian: bool | None) -> bool:
+    if little_endian is not None:
+        return little_endian
+    value = getattr(tftp, "is_le", None)
+    if value is None:
+        raise ValueError("little_endian must be provided when tftp.is_le is unavailable")
+    return bool(value)
 
 
 def _parse_max_size(max_size: int | str | None) -> int:

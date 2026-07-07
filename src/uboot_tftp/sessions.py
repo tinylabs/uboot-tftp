@@ -35,6 +35,7 @@ class ClientSession:
     current_token: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     public_env: dict[str, str] = field(default_factory=dict)
+    is_le: bool | None = None
     preflight_pending: bool = False
     download_artifacts: set[str] = field(default_factory=set)
 

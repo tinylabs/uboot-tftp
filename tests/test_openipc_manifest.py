@@ -53,8 +53,11 @@ class FakeTftp:
 def test_github_json_manifest_starts_download_and_loads_json():
     module = load_openipc_module()
     tftp = FakeTftp(
-        b'{"name":"latest","assets":[{"name":"openipc-gk7205v300-lite.bin"},'
-        b'{"name":"openipc-gk7205v300-ultimate.bin"},{"name":"other.bin"}]}'
+        b'{"name":"latest","assets":[{"name":"openipc-gk7205v300-lite.bin",'
+        b'"browser_download_url":"https://example.com/lite.bin"},'
+        b'{"name":"openipc-gk7205v300-ultimate.bin",'
+        b'"browser_download_url":"https://example.com/ultimate.bin"},'
+        b'{"name":"other.bin","browser_download_url":"https://example.com/other.bin"}]}'
     )
 
     manifest = module.GithubJsonManifest(tftp, "OpenIPC/firmware/releases/tags/latest")
@@ -65,16 +68,30 @@ def test_github_json_manifest_starts_download_and_loads_json():
     assert manifest.destination == "github/OpenIPC/firmware/releases/tags/latest.json"
     assert data["name"] == "latest"
     assert data["assets"][0]["name"] == "openipc-gk7205v300-lite.bin"
-    assert manifest.find(match=["gk7205v300", "lite"]) == {
-        "openipc-gk7205v300-lite.bin": {"name": "openipc-gk7205v300-lite.bin"}
-    }
-    assert manifest.find(match=[]) == {
-        "openipc-gk7205v300-lite.bin": {"name": "openipc-gk7205v300-lite.bin"},
-        "openipc-gk7205v300-ultimate.bin": {"name": "openipc-gk7205v300-ultimate.bin"},
-        "other.bin": {"name": "other.bin"},
-    }
+    assert manifest.find(match=["gk7205v300", "lite"]) == [
+        {
+            "name": "openipc-gk7205v300-lite.bin",
+            "browser_download_url": "https://example.com/lite.bin",
+        }
+    ]
+    assert manifest.find(match=[]) == [
+        {
+            "name": "openipc-gk7205v300-lite.bin",
+            "browser_download_url": "https://example.com/lite.bin",
+        },
+        {
+            "name": "openipc-gk7205v300-ultimate.bin",
+            "browser_download_url": "https://example.com/ultimate.bin",
+        },
+        {
+            "name": "other.bin",
+            "browser_download_url": "https://example.com/other.bin",
+        },
+    ]
     assert len(tftp.acquire_calls) == 1
-    assert tftp.acquire_calls[0]["artifact_key"] == "github-json:OpenIPC/firmware/releases/tags/latest"
+    assert tftp.acquire_calls[0]["artifact_key"] == (
+        "https://api.github.com/repos/OpenIPC/firmware/releases/tags/latest"
+    )
     assert tftp.acquire_calls[0]["destination"] == "github/OpenIPC/firmware/releases/tags/latest.json"
     assert tftp.acquire_calls[0]["url"] == "https://api.github.com/repos/OpenIPC/firmware/releases/tags/latest"
     assert tftp.acquire_calls[0]["page_url"] == "https://api.github.com/repos/OpenIPC/firmware/releases/tags/latest"
@@ -88,14 +105,46 @@ def test_github_json_manifest_uses_cached_file_in_constructor():
     destination = "github/OpenIPC/firmware/releases/tags/latest.json"
     tftp._existing.add(destination)
     tftp._files[destination] = (
-        b'{"name":"latest","assets":[{"name":"cached-openipc-gk7205v300-lite.bin"}]}'
+        b'{"name":"latest","assets":[{"name":"cached-openipc-gk7205v300-lite.bin",'
+        b'"browser_download_url":"https://example.com/cached-lite.bin"}]}'
     )
 
-    manifest = module.GithubJsonManifest(tftp, "OpenIPC/firmware/releases/tags/latest")
+    manifest = module.GithubJsonManifest(
+        tftp,
+        "OpenIPC/firmware/releases/tags/latest",
+        cache=True,
+    )
 
     assert manifest.manifest["name"] == "latest"
-    assert manifest.find(match=["cached", "lite"]) == {
-        "cached-openipc-gk7205v300-lite.bin": {"name": "cached-openipc-gk7205v300-lite.bin"}
-    }
+    assert manifest.find(match=["cached", "lite"]) == [
+        {
+            "name": "cached-openipc-gk7205v300-lite.bin",
+            "browser_download_url": "https://example.com/cached-lite.bin",
+        }
+    ]
     assert tftp.acquire_calls == []
     assert tftp.exec_calls == []
+
+
+def test_github_json_manifest_download_asset_downloads_and_reads_binary():
+    module = load_openipc_module()
+    payload = b"firmware-binary"
+    tftp = FakeTftp(payload)
+    manifest = module.GithubJsonManifest(tftp, "OpenIPC/firmware/releases/tags/latest")
+
+    binary = asyncio.run(
+        manifest.download_asset(
+            {
+                "name": "openipc-gk7205v300-lite.bin",
+                "browser_download_url": "https://example.com/lite.bin",
+            }
+        )
+    )
+
+    assert binary == payload
+    assert len(tftp.acquire_calls) == 1
+    assert tftp.acquire_calls[0]["url"] == "https://example.com/lite.bin"
+    assert tftp.acquire_calls[0]["destination"] == (
+        "OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin"
+    )
+    assert tftp.read_file(tftp.acquire_calls[0]["destination"]) == payload

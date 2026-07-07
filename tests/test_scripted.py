@@ -38,7 +38,7 @@ def preflight_session(provider, filename):
 def start_session_script(provider, filename):
     client_id, _, token = preflight_session(provider, filename)
     return script_from_result(
-        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true"))
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44"))
     )
 
 
@@ -163,11 +163,12 @@ def test_initial_session_runs_hush_preflight_before_user_handler(tmp_path):
     assert client_id == "cam123"
     assert "Checking hush shell..." in preflight
     assert 'if true; then setenv hush_shell true; fi' in preflight
-    assert f'/hush_shell=${{hush_shell}}"' in preflight
+    assert 'setexpr.b _1 *${loadaddr}' in preflight
+    assert f'/hush_shell=${{hush_shell}}/_1=${{_1}}"' in preflight
     assert "echo handler ran" not in preflight
 
     second = script_from_result(
-        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true"))
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44"))
     )
     assert "echo handler ran" in second
 
@@ -197,6 +198,32 @@ def test_initial_session_fails_when_hush_shell_is_unavailable(tmp_path):
     assert "hush-compatible if/then support" in failure
     assert "echo handler ran" not in failure
     assert sessions.get("cam123") is None
+
+
+def test_session_handle_exposes_preflight_endianness(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec([f'echo endian {tftp.is_le}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    client_id, _, token = preflight_session(provider, "id=cam123/bootstrap")
+    second = script_from_result(
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44"))
+    )
+
+    assert "echo endian True" in second
 
 
 def test_exec_appends_internal_continuation_rrq(tmp_path):
