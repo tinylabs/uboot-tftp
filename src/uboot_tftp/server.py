@@ -160,6 +160,42 @@ class DynamicContentServer:
     def close(self, now: bool = True) -> None:
         self._server.stop(now=now)
 
+    def reload(
+        self,
+        *,
+        provider: DynamicContentProvider,
+        upload_store: InMemoryUploadStore,
+        tftproot: str | os.PathLike[str],
+        address: str | None = None,
+        port: int | None = None,
+        retries: int | None = None,
+        timeout: int | None = None,
+    ) -> None:
+        """Reload runtime configuration without replacing the listening socket."""
+
+        new_root = str(tftproot)
+        Path(new_root).mkdir(parents=True, exist_ok=True)
+        if address is not None and address != self.address:
+            LOGGER.warning(
+                "Ignoring reloaded address change while server is running: %s -> %s",
+                self.address,
+                address,
+            )
+        if port is not None and port != self.port:
+            LOGGER.warning(
+                "Ignoring reloaded port change while server is running: %s -> %s",
+                self.port,
+                port,
+            )
+        if retries is not None:
+            self.retries = int(retries)
+        if timeout is not None:
+            self.timeout = int(timeout)
+        self.provider = provider
+        self.upload_store = upload_store
+        self.tftproot = new_root
+        LOGGER.info("Reloaded server runtime state tftproot=%s", self.tftproot)
+
     def _open_dynamic_download(
         self,
         filename: str,

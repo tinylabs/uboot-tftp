@@ -197,6 +197,36 @@ def test_dynamic_content_server_run_delegates_to_tftpy_listen(tmp_path):
     }
 
 
+def test_dynamic_content_server_reload_swaps_provider_and_runtime_state(tmp_path):
+    server = DynamicContentServer(
+        address="127.0.0.1",
+        port=6969,
+        retries=3,
+        timeout=5,
+        provider=CallableContentProvider(lambda request: ContentResult.from_bytes(b"old")),
+        upload_store=InMemoryUploadStore(InMemorySessionStore()),
+        tftproot=tmp_path / "old-root",
+        server_factory=FakeTftpServer,
+    )
+    new_uploads = InMemoryUploadStore(InMemorySessionStore())
+    new_provider = CallableContentProvider(lambda request: ContentResult.from_bytes(b"new"))
+
+    server.reload(
+        provider=new_provider,
+        upload_store=new_uploads,
+        tftproot=tmp_path / "new-root",
+        retries=9,
+        timeout=11,
+    )
+
+    assert server.provider is new_provider
+    assert server.upload_store is new_uploads
+    assert server.tftproot == str((tmp_path / "new-root"))
+    assert server.retries == 9
+    assert server.timeout == 11
+    assert (tmp_path / "new-root").is_dir()
+
+
 def test_fileobj_from_result_wraps_bytes():
     fileobj = fileobj_from_result(ContentResult.from_bytes(b"payload"))
 
