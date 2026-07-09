@@ -1,3 +1,10 @@
+Co-authored with ChatGPT Codex.
+
+Work in progress. This project is not stable yet.
+
+TODO:
+- probe available commands in preflight
+
 # uboot-tftp
 
 Minimal session-aware TFTP server for OpenIPC and U-Boot style workflows.
