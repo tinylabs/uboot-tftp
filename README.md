@@ -44,6 +44,20 @@ It also installs a packaged OpenIPC example:
 
 `openipc-tftp` starts the server with the packaged OpenIPC config and script. By default it uses `rootdir = "/tmp/openipc-tftp"`. Override that at runtime with `--rootdir`.
 
+On Linux, binding to UDP port `69` normally requires root. If you want to run the server as a normal user without `sudo`, you can temporarily lower the unprivileged port floor:
+
+```bash
+sudo sysctl -w net.ipv4.ip_unprivileged_port_start=69
+```
+
+That change is runtime-only and reverts on reboot. To undo it immediately:
+
+```bash
+sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024
+```
+
+If you would rather avoid changing the sysctl, run the server with `sudo` or configure a higher TFTP port instead of `69`.
+
 Below is the terminal output showing openipc install using the server from a networked camera.
 
 ```
