@@ -26,7 +26,7 @@ See [openipc.py](scripts/openipc.py) for the reference implementation.
 Install from GitHub with pip:
 
 ```bash
-pip install git+https://github.com/<owner>/uboot-tftp.git
+pip install git+https://github.com/tinylabs/uboot-tftp.git
 ```
 
 This installs the core CLI tools:
