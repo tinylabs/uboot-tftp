@@ -3,7 +3,17 @@
 This project is still a work in progress. Expect the API, example scripts, and operational details to change while the design is still settling; it should not be considered stable yet.
 
 TODO:
-- probe available commands in preflight
+- probe available commands in preflight.
+  - Check $? when running commands without args
+- Add internal handling of `bootstrap` and `bootstrap_onboot` tftp commands.
+  - Install the `netinit` and `bootstrap` commands when found.
+  - `bootstrap_onboot` should inject itself into bootcmd with a failover for normal boot when tftp times out.
+  - `unbootstrap` to revert (as a baked in command, not dependent on tftp server running).
+  - Save passed id to use on future bootstrap calls.
+  - Save list of discovered commands/properties to minimize preflight calls.
+  - Use unique namespace prefix for saved commands.
+  - echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
+  - Hosted locally only via python fastapi.
 
 # uboot-tftp
 
