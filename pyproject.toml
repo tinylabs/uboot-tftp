@@ -33,6 +33,7 @@ dev = [
 
 [project.scripts]
 uboot-tftp = "uboot_tftp.cli:main"
+openipc-tftp = "uboot_tftp.openipc_tftp:main"
 uboot-tftp-check = "uboot_tftp.check_cli:main"
 uboot-tftp-client = "uboot_tftp.test_client:main"
 uboot-tftp-env = "uboot_tftp.ubootenv_cli:main"
@@ -41,7 +42,7 @@ uboot-tftp-env = "uboot_tftp.ubootenv_cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-uboot_tftp = ["py.typed"]
+uboot_tftp = ["py.typed", "openipc.py", "openipc.toml"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

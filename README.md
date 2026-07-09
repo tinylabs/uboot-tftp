@@ -21,6 +21,29 @@ As a proof of concept, an implementation for installation of the openipc project
 
 See [openipc.py](scripts/openipc.py) for the reference implementation.
 
+## Installation
+
+Install from GitHub with pip:
+
+```bash
+pip install git+https://github.com/<owner>/uboot-tftp.git
+```
+
+This installs the core CLI tools:
+
+- `uboot-tftp`
+- `uboot-tftp-check`
+- `uboot-tftp-client`
+- `uboot-tftp-env`
+
+It also installs a packaged OpenIPC example:
+
+- `openipc-tftp`
+- packaged `openipc.toml`
+- packaged `openipc.py`
+
+`openipc-tftp` starts the server with the packaged OpenIPC config and script. By default it uses `rootdir = "/tmp/openipc-tftp"`. Override that at runtime with `--rootdir`.
+
 Below is the terminal output showing openipc install using the server from a networked camera.
 
 ```
@@ -138,6 +161,8 @@ kernel = 'uImage.${soc}'
 entry_func = "default"
 ```
 
+When installed from pip, the packaged OpenIPC example uses an installed copy of `openipc.py` and a packaged `openipc.toml`, so you do not need a local checkout just to run `openipc-tftp`.
+
 ## Script API
 
 ```python
@@ -222,6 +247,13 @@ These map to files under `/absolute/path/to/files/` when `rootdir = "/absolute/p
 ```bash
 uboot-tftp --config config.toml
 uboot-tftp --config config.toml --rootdir /absolute/path/to/files
+```
+
+To run the packaged OpenIPC example installed from pip:
+
+```bash
+openipc-tftp
+openipc-tftp --rootdir /absolute/path/to/files
 ```
 
 ## Extracting U-Boot Env
