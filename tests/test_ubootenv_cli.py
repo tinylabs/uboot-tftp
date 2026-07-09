@@ -51,6 +51,19 @@ def test_cli_supports_inferred_layout_and_json_output(tmp_path, capsys):
     assert payload["mtdparts"] == DEFAULT_ENV["mtdparts"]
 
 
+def test_cli_extracts_embedded_default_from_standalone_uboot_image(tmp_path, capsys):
+    image = _build_boot_partition(DEFAULT_ENV)
+    image_path = tmp_path / "u-boot.bin"
+    image_path.write_bytes(image)
+
+    exit_code = main([str(image_path)])
+
+    assert exit_code == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "bootcmd=" in "\n".join(lines)
+    assert "mtdparts=sfc:256k(boot),64k(env),2048k(kernel),-(rootfs)" in lines
+
+
 def test_cli_prefers_non_empty_env_partition(tmp_path, capsys):
     image = _build_flash_image(
         default_env=DEFAULT_ENV,

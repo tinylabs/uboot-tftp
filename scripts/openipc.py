@@ -10,11 +10,12 @@ import struct
 import json
 import re
 import random
+import zlib
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
-from typing import Any, TypedDict
+from typing import Any
 
 from uboot_tftp.ubootscript import *
 from uboot_tftp.ubootops import *
@@ -22,13 +23,70 @@ from uboot_tftp.ubootterm import *
 from uboot_tftp.ubootenv import *
 
 
-class GithubAsset(TypedDict, total=False):
-    name: str
-    browser_download_url: str
-    content_type: str
-    size: int
-    updated_at: str
+def openipc_partition_table(
+    env: dict[str, str],
+    *,
+    flash_size: int | None = None,
+    flash_type: str | None = None,
+    key: str | None = None,
+) -> PartitionTable:
+    for candidate in _openipc_mtdparts_keys(
+        env,
+        flash_size=flash_size,
+        flash_type=flash_type,
+        key=key,
+    ):
+        value = env.get(candidate)
+        if value is None:
+            continue
+        spec = extract_mtdparts_spec(value)
+        if spec is None:
+            continue
+        return parse_mtdparts_spec(spec, total_size=flash_size)
+    raise ValueError("unable to find an OpenIPC mtdparts specification in environment")
 
+
+def _openipc_mtdparts_keys(
+    env: dict[str, str],
+    *,
+    flash_size: int | None,
+    flash_type: str | None,
+    key: str | None,
+) -> list[str]:
+    if key is not None:
+        return [key]
+
+    keys: list[str] = []
+    if flash_type is not None and flash_size is not None:
+        size_mb = flash_size // 2**20
+        kind = flash_type.strip().lower()
+        if kind == "nor":
+            keys.append(f"mtdpartsnor{size_mb}m")
+        elif kind == "nand":
+            keys.extend(["mtdpartsnand", "mtdpartsubi"])
+
+    keys.append("mtdparts")
+    keys.extend(
+        sorted(name for name in env if name.startswith("mtdpartsnor") and name not in keys)
+    )
+    keys.extend(
+        sorted(
+            name
+            for name in env
+            if "mtdparts" in name and name not in keys
+        )
+    )
+    return keys
+
+
+class GithubAsset(dict[str, Any]):
+    def crc32(self, binary: bytes, *, size: int | None = None) -> int:
+        payload = binary
+        if size is not None:
+            if size < len(binary):
+                raise ValueError("size must be at least the binary length")
+            payload = binary + (b"\xFF" * (size - len(binary)))
+        return zlib.crc32(payload) & 0xFFFFFFFF
 
 class GithubJsonManifest:
     """Download and cache a GitHub API JSON manifest."""
@@ -76,7 +134,7 @@ class GithubJsonManifest:
         assets = manifest.get("assets", [])
         if not isinstance(assets, list):
             raise TypeError("manifest assets field must be a list")
-        return [asset for asset in assets if isinstance(asset, dict)]
+        return [GithubAsset(asset) for asset in assets if isinstance(asset, dict)]
 
     def find(self, *, match: Iterable[str]) -> list[GithubAsset]:
         needles = [str(value) for value in match if str(value)]
@@ -93,6 +151,7 @@ class GithubJsonManifest:
         asset: GithubAsset,
         *,
         destination: str | None = None,
+        cache: bool = False,
     ) -> bytes:
         url = str(asset.get("browser_download_url", "")).strip()
         if not url:
@@ -103,6 +162,9 @@ class GithubJsonManifest:
             raise ValueError("asset must include name")
 
         filepath = destination or self._asset_destination(name)
+        if cache and self.tftp.file_exists(filepath):
+            await self.tftp.exec([uboot_msg(f"Using cached asset: {filepath}", bold=True)])
+            return self.tftp.read_file(filepath)
         await uboot_download_url(
             self.tftp,
             url=url,
@@ -235,15 +297,13 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
 def check_install_args (tftp, ident: str, cmd: str,
                         env: dict[str, str]) -> list:
     script = []
-    if 'vendor' not in env:
-        script.append (uboot_err ("Must pass vendor=name"))
     if 'soc' not in env:
         script.append (uboot_err ("Must pass soc=name"))
     if env['fw'] not in ('lite', 'ultimate'):
         script.append (uboot_err (f"Invalid: fw={fw} - Only fw=lite|ultimate supported"))
     if script:
         script.append (uboot_err (f"ie: {tftp.cmdtftp} {tftp.rambase} " +
-                                  "{tftp.server_ip}:id={ident}/{cmd}/vendor=goke/soc=gk7205v300/fw=lite; " +
+                                  "{tftp.server_ip}:id={ident}/{cmd}/soc=gk7205v300/fw=lite; " +
                                   "source {tftp.rambase}"))
     return script
 
@@ -261,7 +321,7 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     await tftp.exec([uboot_msg ('OK')])
 
     # Merge keys from tftp environment (override) if present
-    keys = ['nor_size', 'fw', 'vendor', 'soc']
+    keys = ['nor_size', 'fw', 'soc']
     cenv.update({k: tftp_env[k] for k in keys if k in tftp_env})
 
     # Set defaults if not present
@@ -294,16 +354,58 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
 
     # Collect environment variables
     fw = cenv['fw']
-    vendor = cenv["vendor"]
     soc = cenv["soc"]
     filename = f"install/openipc-{soc}-{fw}-{nor_size_mb}mb.bin"
     backup_filename = f'install-backup-{ident}-{soc}-{nor_size_mb}mb-{datetime.now():%Y%m%d-%H%M%S}.bin'
 
+    # Get manifest and uboot image for soc
+    path='OpenIPC/firmware/releases/tags/latest'
+    manifest = GithubJsonManifest(tftp, path=path, cache=True)
+    await manifest.load ()
+    matches = manifest.find (match=[soc, 'u-boot'])
+    if len(matches) != 1:
+        tftp.exec([uboot_err(f'uboot image count != 1: {len(matches)}')], final=True)
+        return
+    else:
+        asset = matches[0]
+
     # Backup NOR memory
-    await tftp.exec([uboot_msg('Backing up NOR flash.', bold=True)])
-    await openipc_nor_backup(tftp, nor_size, backup_filename)
+    #await tftp.exec([uboot_msg('Backing up NOR flash.', bold=True)])
+    #await openipc_nor_backup(tftp, nor_size, backup_filename)
+
+    # Copy current NOR to RAM at offset
+    offset = 16 * 2**20
+    await tftp.exec([
+        uboot_msg ("Copying NOR flash to RAM... ", bold=True, nl=False),
+        uboot_nor_read (tftp, nor_offset=0, ram_offset=offset, size=nor_size),
+        uboot_msg ("OK")
+    ])
+
+    # Download and extract environment
+    uboot = await manifest.download_asset(
+        asset,
+        destination=f"{path}/{soc}/{asset['name']}",
+        cache=True
+    )
+    new_env = ubootenv_extract(uboot)
+    parts = openipc_partition_table(new_env, flash_type="nor", flash_size=nor_size)
+    entries = parts.resolved_entries()
+
+    # Calculate CRCs of current partitions
+    addr = offset + tftp.rambase_addr
+    crc_ranges = [(addr + entry.offset, entry.size) for entry in entries]
+    res = await uboot_crc32(tftp, crc_ranges)
+    cmds = [
+        uboot_msg(
+            f"{entry.name:<14}: 0x{entry.offset:08x}:0x{entry.offset + entry.size - 1:08x} => 0x{crc:08x}"
+        )
+        for entry, crc in zip(entries, res)
+    ]
+    await tftp.exec(cmds, final=True)
+    return
 
     # Download official binary
+    '''
     binary = await openipc_download_binary(tftp, vendor=vendor, soc=soc, fw=fw, size_mb=nor_size_mb)
     if not binary:
         return
@@ -317,6 +419,7 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             uboot_err(f"Failed to extract uboot env from {Path(filename).name}", final=True),
         ])
         return
+    '''
 
     # TODO: check if uboot env crc needs to be big endian on MIPS
     # Otherwise patched env won't load on reset
@@ -381,81 +484,6 @@ async def uboot_nomatch(tftp, ident: str, cmd: str, cmd_list: list=None, final: 
 
 Range = tuple[int, int]
 
-def batched(items: list[Range], size: int) -> list[list[Range]]:
-    return [items[i:i + size] for i in range(0, len(items), size)]
-
-def split_range(addr: int, size: int, parts: int = 2) -> list[Range]:
-    if size % parts != 0:
-        raise ValueError(f"range size {size:#x} is not divisible by {parts}")
-
-    chunk = size // parts
-    return [(addr + i * chunk, chunk) for i in range(parts)]
-
-def coalesce_ranges(ranges: list[Range]) -> list[Range]:
-    if not ranges:
-        return []
-
-    ranges = sorted(ranges)
-
-    merged: list[Range] = []
-    cur_addr, cur_size = ranges[0]
-    cur_end = cur_addr + cur_size
-
-    for addr, size in ranges[1:]:
-        end = addr + size
-
-        if addr <= cur_end:
-            # Adjacent or overlapping.
-            cur_end = max(cur_end, end)
-        else:
-            merged.append((cur_addr, cur_end - cur_addr))
-            cur_addr = addr
-            cur_end = end
-
-    merged.append((cur_addr, cur_end - cur_addr))
-    return merged
-
-async def find_active(
-    tftp,
-    tftp_env,
-    ranges: list[Range],
-    *,
-    min_chunk: int = 0x800, # 2kB chunks
-    split_parts: int = 2,
-    max_ranges: int = 6,
-) -> list[Range]:
-    cur = ranges
-
-    while cur:
-        changed: list[Range] = []
-
-        for batch in batched(cur, max_ranges):
-            res1 = await uboot_crc32(tftp, batch)
-            res2 = await uboot_crc32(tftp, batch)
-
-            changed.extend(
-                r
-                for r, x, y in zip(batch, res1, res2)
-                if x != y
-            )
-
-        if not changed:
-            return []
-
-        # Assuming all ranges at this iteration have the same size.
-        chunk = changed[0][1]
-
-        if chunk <= min_chunk:
-            return coalesce_ranges(changed)
-
-        cur = [
-            subrange
-            for addr, size in changed
-            for subrange in split_range(addr, size, split_parts)
-        ]
-
-    return []
-
 
 async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     '''
@@ -494,7 +522,7 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             path='OpenIPC/firmware/releases/tags/latest'
             manifest = GithubJsonManifest(tftp, path=path)
             await manifest.load ()
-            matches = manifest.find (match=[soc])
+            matches = manifest.find (match=[soc, 'u-boot'])
             for asset in matches:
                 await manifest.download_asset(
                     asset,
@@ -502,21 +530,6 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 )
             await tftp.exec ([uboot_msg ()], final=True)
 
-        case 'active':
-            ranges = [
-                # 16MB ranges - 96MB total
-                (0x42000000, 0x1000000), # Dynamic script (changes crc)
-                (0x43000000, 0x1000000), # Stable
-                (0x44000000, 0x1000000), # Stable
-                (0x45000000, 0x1000000), # Stable
-                (0x46000000, 0x1000000), # Stable
-                (0x47000000, 0x1000000), # TLBs, stack, etc (changes crc)
-            ]
-            res = await find_active(tftp, tftp_env, ranges)
-            cmds = [uboot_msg(f'{hex(addr)}:{hex(length)}', color='yellow')
-                    for _, (addr, length) in enumerate(res)]
-            await tftp.exec(cmds, final=True)
-            
         case 'crc32':
             ranges = [
                 # 16MB ranges - 96MB total
@@ -529,9 +542,10 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             ]
             
             res = await uboot_crc32(tftp, ranges)
-            res =  [hex(x) for x in res]
-            cmds = [uboot_msg(f'{hex(addr)}:{hex(addr+length-1)} => {res[_]}')
-                    for _, (addr, length) in enumerate(ranges)]
+            cmds = [
+                uboot_msg(f'0x{addr:08x}:0x{addr + length - 1:08x} => 0x{res[_]:08x}')
+                for _, (addr, length) in enumerate(ranges)
+            ]
             await tftp.exec(cmds, final=True)
 
         # Unrecognized cmd

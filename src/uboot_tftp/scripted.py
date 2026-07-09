@@ -76,6 +76,18 @@ class SessionHandle:
         return f"${{{self.rambase_var}}}"
 
     @property
+    def rambase_addr(self) -> int:
+        value = self.session.env.get(self.rambase_var)
+        if value is None:
+            raise RuntimeError(f"resolved RAM base value is missing for {self.rambase_var!r}")
+        try:
+            return int(value, 0)
+        except ValueError as error:
+            raise ValueError(
+                f"invalid RAM base value for {self.rambase_var!r}: {value!r}"
+            ) from error
+
+    @property
     def root(self) -> str:
         return str(self.provider.static_root)
 
@@ -333,7 +345,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
             _preflight_probe_script(session.env["rambase"]),
             session,
             recv_status=None,
-            return_keys=("hush_shell", "_1"),
+            return_keys=("hush_shell", "_1", session.env["rambase"]),
         )
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
 
@@ -500,7 +512,7 @@ def _preflight_probe_script(rambase_var: str) -> str:
     return _join_script_lines(
         (
             uboot_term_reset(),
-            uboot_msg("Checking hush shell... ", bold=True),
+            uboot_msg("Executing preflight... ", bold=True),
             "if true; then setenv hush_shell true; fi",
             f"setexpr.l tmp *{rambase}",
             f"mw.l {rambase} 0x11223344 1",

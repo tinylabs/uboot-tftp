@@ -9,12 +9,13 @@ import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from .partitions import extract_mtdparts_spec, parse_mtdparts_spec
+
 _ENV_KEY_RE = re.compile(rb"^[A-Za-z0-9_.-]+$")
 _ENV_BLOB_RE = re.compile(
     rb"(?:[A-Za-z0-9_.-]{1,64}=[^\x00\r\n]{0,1024}\x00){5,}"
 )
 _RAW_ENV_PREFIX_RE = re.compile(rb"^[A-Za-z0-9_.-]+=")
-_MTDPARTS_ENTRY_RE = re.compile(r"([0-9A-Fa-fx]+[kKmMgG]?|-)\(([^)]+)\)")
 
 _CORE_ENV_KEYS = (
     "bootcmd",
@@ -166,7 +167,7 @@ def ubootenv_extract(
     env_offset: int | None = None,
     env_size: int | None = None,
 ) -> dict[str, str]:
-    """Extract the effective U-Boot env from a full flash image."""
+    """Extract the effective U-Boot env from a flash image or standalone U-Boot image."""
 
     boot_size, env_offset, env_size, default_env = _resolve_partition_layout(
         image,
@@ -178,7 +179,18 @@ def ubootenv_extract(
 
     partition = image[env_offset : env_offset + env_size]
     if len(partition) != env_size:
-        raise ValueError("env partition extends beyond the flash image")
+        if default_env is not None:
+            return default_env
+        boot_region = image[boot_offset : boot_offset + boot_size]
+        if len(boot_region) != boot_size:
+            raise ValueError("boot partition extends beyond the flash image")
+        try:
+            return extract_default_env_from_uboot(boot_region)
+        except ValueError as boot_error:
+            raise ValueError(
+                "env partition extends beyond the flash image; also failed to "
+                f"extract embedded default env: {boot_error}"
+            ) from boot_error
 
     try:
         return ubootenv_parse_part(partition)
@@ -381,70 +393,19 @@ def _find_mtdparts_layout(env: dict[str, str]) -> tuple[int, int] | None:
         value = env.get(key)
         if value is None:
             continue
-        layout = _extract_mtdparts_spec(value)
-        if layout is None:
+        spec = extract_mtdparts_spec(value)
+        if spec is None:
             continue
-        parsed = _parse_mtdparts_spec(layout)
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _extract_mtdparts_spec(value: str) -> str | None:
-    for token in value.replace(";", " ").split():
-        candidate = token.strip("\"'")
-        if (
-            ":" not in candidate
-            or "(boot)" not in candidate
-            or "(env)" not in candidate
-        ):
+        try:
+            table = parse_mtdparts_spec(spec)
+        except ValueError:
             continue
-        return candidate
+        boot = table.get("boot")
+        env_part = table.get("env")
+        if boot is None or env_part is None or boot.size is None or env_part.size is None:
+            continue
+        return boot.size, env_part.size
     return None
-
-
-def _parse_mtdparts_spec(spec: str) -> tuple[int, int] | None:
-    _, separator, remainder = spec.partition(":")
-    if not separator:
-        return None
-
-    entries = [
-        (_parse_size_token(size_token), name.strip().lower())
-        for size_token, name in _MTDPARTS_ENTRY_RE.findall(remainder)
-    ]
-    if len(entries) < 2:
-        return None
-
-    boot_size, boot_name = entries[0]
-    env_size, env_name = entries[1]
-    if (
-        boot_name != "boot"
-        or env_name != "env"
-        or boot_size is None
-        or env_size is None
-    ):
-        return None
-    return boot_size, env_size
-
-
-def _parse_size_token(token: str) -> int | None:
-    token = token.strip().lower()
-    if token == "-":
-        return None
-
-    multiplier = 1
-    if token.endswith("k"):
-        multiplier = 1024
-        token = token[:-1]
-    elif token.endswith("m"):
-        multiplier = 1024 * 1024
-        token = token[:-1]
-    elif token.endswith("g"):
-        multiplier = 1024 * 1024 * 1024
-        token = token[:-1]
-
-    base = 16 if token.startswith("0x") else 10
-    return int(token, base) * multiplier
 
 
 def _parse_nul_delimited_env(body: bytes) -> dict[str, str]:

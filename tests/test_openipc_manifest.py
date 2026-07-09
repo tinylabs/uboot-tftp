@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,8 +47,10 @@ class FakeTftp:
 
     async def exec(self, script, final=False, keys=()):  # noqa: ARG002
         self.exec_calls.append((script, final))
-        self._files[self.acquire_calls[0]["destination"]] = self.payload
-        self._artifact.state = "done"
+        if self.acquire_calls:
+            self._files[self.acquire_calls[0]["destination"]] = self.payload
+        if self._artifact is not None:
+            self._artifact.state = "done"
 
 
 def test_github_json_manifest_starts_download_and_loads_json():
@@ -148,3 +151,47 @@ def test_github_json_manifest_download_asset_downloads_and_reads_binary():
         "OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin"
     )
     assert tftp.read_file(tftp.acquire_calls[0]["destination"]) == payload
+
+
+def test_github_json_manifest_download_asset_uses_cached_file_when_enabled():
+    module = load_openipc_module()
+    payload = b"cached-binary"
+    tftp = FakeTftp(b"unused")
+    destination = "OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin"
+    tftp._existing.add(destination)
+    tftp._files[destination] = payload
+    manifest = module.GithubJsonManifest(tftp, "OpenIPC/firmware/releases/tags/latest")
+
+    binary = asyncio.run(
+        manifest.download_asset(
+            {
+                "name": "openipc-gk7205v300-lite.bin",
+                "browser_download_url": "https://example.com/lite.bin",
+            },
+            cache=True,
+        )
+    )
+
+    assert binary == payload
+    assert tftp.acquire_calls == []
+    assert len(tftp.exec_calls) == 1
+    assert "Using cached asset: OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin" in (
+        tftp.exec_calls[0][0][0]
+    )
+
+
+def test_github_asset_crc32_matches_uboot_algorithm():
+    module = load_openipc_module()
+    asset = module.GithubAsset(name="firmware.bin")
+    payload = b"firmware-binary"
+
+    assert asset.crc32(payload) == (zlib.crc32(payload) & 0xFFFFFFFF)
+
+
+def test_github_asset_crc32_can_pad_with_erased_flash_bytes():
+    module = load_openipc_module()
+    asset = module.GithubAsset(name="firmware.bin")
+    payload = b"\x01\x02\x03"
+    padded = payload + (b"\xFF" * 5)
+
+    assert asset.crc32(payload, size=8) == (zlib.crc32(padded) & 0xFFFFFFFF)

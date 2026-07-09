@@ -3,6 +3,12 @@
 from .config import DaemonConfig, ScriptRoute, load_daemon_config
 from .download_jobs import DownloadArtifact, DownloadJobStore, DownloadRequest
 from .mkimage import LegacyScriptImageCompiler, extract_script_payload
+from .partitions import (
+    PartitionEntry,
+    PartitionTable,
+    extract_mtdparts_spec,
+    parse_mtdparts_spec,
+)
 from .protocol import ParsedPath, parse_request_path
 from .providers import CallableContentProvider, ContentRequest, ContentResult
 from .scripted import ScriptedSessionProvider, SessionHandle
@@ -52,6 +58,8 @@ __all__ = [
     "InMemorySessionStore",
     "InMemoryUploadStore",
     "LegacyScriptImageCompiler",
+    "PartitionEntry",
+    "PartitionTable",
     "ParsedPath",
     "ubootenv_parse_export",
     "ubootenv_parse_part",
@@ -77,6 +85,8 @@ __all__ = [
     "extract_script_payload",
     "load_daemon_config",
     "parse_request_path",
+    "extract_mtdparts_spec",
+    "parse_mtdparts_spec",
 ]
 
 

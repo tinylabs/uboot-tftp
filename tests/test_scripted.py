@@ -38,7 +38,9 @@ def preflight_session(provider, filename):
 def start_session_script(provider, filename):
     client_id, _, token = preflight_session(provider, filename)
     return script_from_result(
-        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44"))
+        provider.fetch(
+            request(f"id={client_id}/token={token}/hush_shell=true/_1=44/loadaddr=0x42000000")
+        )
     )
 
 
@@ -140,6 +142,91 @@ def test_session_handle_exposes_absolute_static_root(tmp_path):
     assert f"echo root {tmp_path / 'static'}" in script
 
 
+def test_session_handle_exposes_resolved_rambase_address(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec([f'echo rambase {hex(tftp.rambase_addr)}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = start_session_script(provider, "id=cam123/boot")
+
+    assert "echo rambase 0x42000000" in script
+
+
+def test_session_handle_rambase_addr_requires_resolved_env_value(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    try:",
+                "        _ = tftp.rambase_addr",
+                "    except RuntimeError as exc:",
+                "        await tftp.exec([f'echo missing {exc}'], final=True)",
+                "        return",
+                "    await tftp.exec(['echo unexpected'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    client_id, _, token = preflight_session(provider, "id=cam123/boot")
+    script = script_from_result(
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44"))
+    )
+
+    assert "resolved RAM base value is missing for 'loadaddr'" in script
+
+
+def test_session_handle_rambase_addr_rejects_invalid_env_value(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    try:",
+                "        _ = tftp.rambase_addr",
+                "    except ValueError as exc:",
+                "        await tftp.exec([f'echo invalid {exc}'], final=True)",
+                "        return",
+                "    await tftp.exec(['echo unexpected'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    client_id, _, token = preflight_session(provider, "id=cam123/boot/loadaddr=bogus")
+    script = script_from_result(
+        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44/loadaddr=bogus"))
+    )
+
+    assert "invalid RAM base value for 'loadaddr': 'bogus'" in script
+
+
 def test_initial_session_runs_hush_preflight_before_user_handler(tmp_path):
     config = write_config(
         tmp_path,
@@ -161,14 +248,16 @@ def test_initial_session_runs_hush_preflight_before_user_handler(tmp_path):
     client_id, preflight, token = preflight_session(provider, "id=cam123/bootstrap")
 
     assert client_id == "cam123"
-    assert "Checking hush shell..." in preflight
+    assert "Executing preflight..." in preflight
     assert 'if true; then setenv hush_shell true; fi' in preflight
     assert 'setexpr.b _1 *${loadaddr}' in preflight
-    assert f'/hush_shell=${{hush_shell}}/_1=${{_1}}"' in preflight
+    assert f'/hush_shell=${{hush_shell}}/_1=${{_1}}/loadaddr=${{loadaddr}}"' in preflight
     assert "echo handler ran" not in preflight
 
     second = script_from_result(
-        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44"))
+        provider.fetch(
+            request(f"id={client_id}/token={token}/hush_shell=true/_1=44/loadaddr=0x42000000")
+        )
     )
     assert "echo handler ran" in second
 
@@ -220,7 +309,9 @@ def test_session_handle_exposes_preflight_endianness(tmp_path):
 
     client_id, _, token = preflight_session(provider, "id=cam123/bootstrap")
     second = script_from_result(
-        provider.fetch(request(f"id={client_id}/token={token}/hush_shell=true/_1=44"))
+        provider.fetch(
+            request(f"id={client_id}/token={token}/hush_shell=true/_1=44/loadaddr=0x42000000")
+        )
     )
 
     assert "echo endian True" in second

@@ -264,6 +264,15 @@ def test_extract_env_from_flash_image_infers_layout_from_embedded_mtdparts():
     assert env["mtdparts"] == DEFAULT_ENV["mtdparts"]
 
 
+def test_extract_env_from_standalone_uboot_image_uses_embedded_default():
+    image = _build_boot_partition(DEFAULT_ENV)
+
+    env = ubootenv_extract(image)
+
+    assert env["bootcmd"] == DEFAULT_ENV["bootcmd"]
+    assert env["mtdparts"] == DEFAULT_ENV["mtdparts"]
+
+
 def _build_flash_image(
     *,
     default_env: dict[str, str],
