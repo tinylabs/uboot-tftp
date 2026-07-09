@@ -80,46 +80,39 @@ If you would rather avoid changing the sysctl, run the server with `sudo` or con
 Below is the terminal output showing openipc install using the server from a networked camera.
 
 ```
-OpenIPC # printenv bootstrap
-bootstrap=run netinit; if tftpboot ${baseaddr} ${serverip}:id=${hostname}/${cmd}/${args}; then source ${baseaddr}; else echo "TFTP request failed: is TFTP server running?"; fi
-OpenIPC # printenv netinit  
-netinit=if test "${ip}" = "static" || test -n "$netdone" && test "$netdone" -eq 1; then echo "Networking OK"; else setenv autoload no; dhcp; netdone=1; fi
-OpenIPC #
-OpenIPC # hostname=cam-final; cmd=install; args=vendor=goke/soc=gk7205v300; run bootstrap
-Checking hush shell... 
+Executing preflight...
 Fetching current uboot environment... OK
 Probing NOR flash... 0x1000000
-Backing up NOR flash.
-Copying NOR to RAM... OK
-Downloading backup via TFTP...
-  Saved backup as backup/install-backup-cam-final-gk7205v300-16mb-20260630-094514.bin
-Using cached download: install/openipc-gk7205v300-lite-16mb.bin.
-Extracting uboot env from image... OK
-Patched env variables:
-  Reusing ethaddr from old env
-  ethaddr    = 02:2a:0e:f2:cb:41
-  hostname   = cam-final
-  bootp_vci  = uboot.cam-final
-  serverip   = 10.0.1.20
-  ipaddr     = 10.0.50.179
-  netmask    = 255.255.255.0
-  gatewayip  = 10.0.50.1
-  fw         = lite
-  ip         = dhcp
-Uploading cam-final-openipc-gk7205v300-lite-16mb.bin... OK
-Erasing flash... OK
-Writing flash... OK
+Downloading github/OpenIPC/firmware/releases/tags/latest.json: 750.6 kB
+Downloading OpenIPC/firmware/releases/tags/latest/gk7205v300/u-boot-gk7205v300-universal.bin: 250.2 kB
+Downloading OpenIPC/firmware/releases/tags/latest/gk7205v300/openipc.gk7205v300-nor-lite.tgz: 6867.5 kB
+Copying NOR flash to RAM... OK
+Partition update plan:
+uboot    0x00000000 size=0x00040000 src=u-boot-gk7205v300-universal.bin  flash=0xb7094978 payload=0x81686d05 update
+env      0x00040000 size=0x00010000 src=cam-final-env.bin                flash=0xdeab7e4e payload=0xce3fd098 update
+kernel   0x00050000 size=0x00300000 src=openipc.gk7205v300-nor-lite.tgz  flash=0xaeecf75a payload=0xfcdeff25 update
+rootfs   0x00350000 size=0x00a00000 src=openipc.gk7205v300-nor-lite.tgz  flash=0xdb3bf1c2 payload=0x287307ad update
+Uploading cam-final-uboot-u-boot-gk7205v300-universal.bin... OK
+Erasing uboot... OK
+Writing uboot... OK
+Uploading cam-final-env-cam-final-env.bin... OK
+Erasing env... OK
+Writing env... OK
+Uploading cam-final-kernel-openipc.gk7205v300-nor-lite.tgz... OK
+Erasing kernel... OK
+Writing kernel... OK
+Uploading cam-final-rootfs-openipc.gk7205v300-nor-lite.tgz... OK
+Erasing rootfs... OK
+Writing rootfs... OK
 
 Install finished for cam-final
-------------------------------
-Flash backup: /home/elliot/work/openipc/uboot-tftp/files/install-backup-cam-final-gk7205v300-16mb-20260630-094514.bin
-Web UI: http://10.0.50.179/
-SSH: ssh root@10.0.50.179 (password: 12345)
-Support OpenIPC: https://opencollective.com/openipc/contribute
+Updated partitions: uboot, env, kernel, rootfs
 
+
+Vendor ETH net controler
 Rebooting in 10 seconds
 Enter Ctrl+C to cancel...
-Rebooting...
+[#         ]
 ```
 
 ## Session Model
