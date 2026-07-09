@@ -14,6 +14,8 @@ TODO:
   - Use unique namespace prefix for saved commands.
   - echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
   - Hosted locally only via python fastapi.
+- Add script logging per session.
+- Generate FIT image with recorded scripts and orchestrator.
 
 # uboot-tftp
 
