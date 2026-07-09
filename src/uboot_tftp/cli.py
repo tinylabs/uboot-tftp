@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import logging
 import signal
 from collections.abc import Callable
+from pathlib import Path
 
 from .config import DaemonConfig, load_daemon_config
 from .scripted import ScriptedSessionProvider
@@ -60,6 +62,96 @@ def configure_logging(log_level: str) -> int:
     return level
 
 
+def pidfile_path(config: DaemonConfig) -> Path:
+    value = config.server.get("pidfile")
+    if value:
+        return Path(str(value)).resolve()
+    return config.path.with_suffix(".pid")
+
+
+def write_pidfile(path: str | Path, pid: int | None = None) -> Path:
+    target = Path(path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{os.getpid() if pid is None else int(pid)}\n")
+    return target
+
+
+def remove_pidfile(path: str | Path) -> None:
+    target = Path(path).resolve()
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return
+
+
+def find_config_pids(
+    config_path: str | Path,
+    *,
+    proc_root: str | Path = "/proc",
+    current_pid: int | None = None,
+) -> list[int]:
+    resolved = str(Path(config_path).resolve())
+    root = Path(proc_root)
+    if not root.exists():
+        return []
+    active_pid = os.getpid() if current_pid is None else int(current_pid)
+
+    matches: list[int] = []
+    for entry in root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == active_pid:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().split(b"\x00")
+        except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            continue
+        args = [part.decode("utf-8", errors="ignore") for part in cmdline if part]
+        if not args:
+            continue
+        if not _is_daemon_argv(args):
+            continue
+        candidate = _config_arg_from_argv(args)
+        if candidate is None:
+            continue
+        try:
+            if str(Path(candidate).resolve()) == resolved:
+                matches.append(pid)
+        except OSError:
+            continue
+    return sorted(set(matches))
+
+
+def resolve_reload_pid(
+    config: DaemonConfig,
+    *,
+    explicit_pid: int | None = None,
+    proc_root: str | Path = "/proc",
+) -> int:
+    if explicit_pid is not None:
+        return int(explicit_pid)
+
+    candidates = set(find_config_pids(config.path, proc_root=proc_root))
+    pidfile = pidfile_path(config)
+    try:
+        pidfile_pid = int(pidfile.read_text().strip(), 0)
+    except FileNotFoundError:
+        pidfile_pid = None
+    except ValueError as error:
+        raise ValueError(f"invalid pidfile contents: {pidfile}") from error
+    if pidfile_pid is not None:
+        candidates.add(pidfile_pid)
+
+    if not candidates:
+        raise ValueError(f"no running instance found for config {config.path}")
+    if len(candidates) > 1:
+        raise ValueError(
+            f"multiple running instances found for config {config.path}: {sorted(candidates)}"
+        )
+    return next(iter(candidates))
+
+
 def reload_server(
     server: DynamicContentServer,
     *,
@@ -105,10 +197,31 @@ def install_reload_handler(
     return handle_reload
 
 
+def _config_arg_from_argv(args: list[str]) -> str | None:
+    for index, arg in enumerate(args):
+        if arg == "--config" and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith("--config="):
+            return arg.partition("=")[2]
+    return None
+
+
+def _is_daemon_argv(args: list[str]) -> bool:
+    joined = " ".join(args)
+    if "uboot_tftp.cli" in joined:
+        return True
+    return any(
+        Path(arg).name == "uboot-tftp"
+        for arg in args
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_daemon_config(args.config, rootdir=args.rootdir)
     configure_logging(str(config.server.get("log_level", "INFO")))
+    pid_path = write_pidfile(pidfile_path(config))
+    LOGGER.info("Wrote pidfile %s", pid_path)
 
     server = build_server(config)
     install_reload_handler(server, config_path=args.config, rootdir=args.rootdir)
@@ -116,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
         server.run()
     except KeyboardInterrupt:
         server.close()
+    finally:
+        remove_pidfile(pid_path)
     return 0
 
 

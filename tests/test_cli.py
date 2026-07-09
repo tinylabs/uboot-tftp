@@ -6,8 +6,13 @@ from uboot_tftp.cli import (
     build_runtime,
     build_server,
     configure_logging,
+    find_config_pids,
     install_reload_handler,
+    pidfile_path,
+    remove_pidfile,
     reload_server,
+    resolve_reload_pid,
+    write_pidfile,
 )
 from uboot_tftp.config import load_daemon_config
 import pytest
@@ -117,6 +122,146 @@ def test_build_runtime_returns_fresh_provider_and_upload_store(tmp_path):
 
     assert provider.static_root == (tmp_path / "root").resolve()
     assert provider.upload_store is uploads
+
+
+def test_pidfile_path_defaults_to_config_basename(tmp_path):
+    script = tmp_path / "script.py"
+    script.write_text("async def default(tftp, ident, cmd, env):\n    pass\n")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[server]",
+                'scriptfile = "script.py"',
+                f'rootdir = "{(tmp_path / "root").resolve()}"',
+                "",
+                "[env]",
+                'rambase = "baseaddr"',
+                'cmdtftp = "tftpboot"',
+                'cmdtftpput = "tftpput"',
+                "",
+                "[default]",
+                'entry_func = "default"',
+            )
+        )
+    )
+
+    config = load_daemon_config(config_path)
+
+    assert pidfile_path(config) == config_path.resolve().with_suffix(".pid")
+
+
+def test_write_and_remove_pidfile_round_trip(tmp_path):
+    path = tmp_path / "uboot-tftp.pid"
+
+    written = write_pidfile(path, 4321)
+
+    assert written == path.resolve()
+    assert path.read_text() == "4321\n"
+
+    remove_pidfile(path)
+
+    assert not path.exists()
+
+
+def test_find_config_pids_scans_proc_cmdlines(tmp_path):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    config_path = (tmp_path / "config.toml").resolve()
+    proc1 = proc_root / "1001"
+    proc1.mkdir()
+    (proc1 / "cmdline").write_bytes(
+        b"python\x00-m\x00uboot_tftp.cli\x00--config\x00" + str(config_path).encode() + b"\x00"
+    )
+    proc2 = proc_root / "1002"
+    proc2.mkdir()
+    (proc2 / "cmdline").write_bytes(b"python\x00other.py\x00")
+    proc3 = proc_root / "1003"
+    proc3.mkdir()
+    (proc3 / "cmdline").write_bytes(
+        b"python\x00/home/elliot/.venv/bin/uboot-tftp-check\x00--config\x00"
+        + str(config_path).encode()
+        + b"\x00"
+    )
+
+    assert find_config_pids(config_path, proc_root=proc_root, current_pid=9999) == [1001]
+
+
+def test_find_config_pids_ignores_current_process(tmp_path):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    config_path = (tmp_path / "config.toml").resolve()
+    proc1 = proc_root / "1001"
+    proc1.mkdir()
+    (proc1 / "cmdline").write_bytes(
+        b"python\x00/home/elliot/.venv/bin/uboot-tftp\x00--config\x00"
+        + str(config_path).encode()
+        + b"\x00"
+    )
+
+    assert find_config_pids(config_path, proc_root=proc_root, current_pid=1001) == []
+
+
+def test_resolve_reload_pid_uses_pidfile_when_available(tmp_path):
+    script = tmp_path / "script.py"
+    script.write_text("async def default(tftp, ident, cmd, env):\n    pass\n")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[server]",
+                'scriptfile = "script.py"',
+                f'rootdir = "{(tmp_path / "root").resolve()}"',
+                "",
+                "[env]",
+                'rambase = "baseaddr"',
+                'cmdtftp = "tftpboot"',
+                'cmdtftpput = "tftpput"',
+                "",
+                "[default]",
+                'entry_func = "default"',
+            )
+        )
+    )
+    config = load_daemon_config(config_path)
+    write_pidfile(pidfile_path(config), 9876)
+
+    assert resolve_reload_pid(config, proc_root=tmp_path / "missing-proc") == 9876
+
+
+def test_resolve_reload_pid_rejects_multiple_matching_instances(tmp_path):
+    script = tmp_path / "script.py"
+    script.write_text("async def default(tftp, ident, cmd, env):\n    pass\n")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[server]",
+                'scriptfile = "script.py"',
+                f'rootdir = "{(tmp_path / "root").resolve()}"',
+                "",
+                "[env]",
+                'rambase = "baseaddr"',
+                'cmdtftp = "tftpboot"',
+                'cmdtftpput = "tftpput"',
+                "",
+                "[default]",
+                'entry_func = "default"',
+            )
+        )
+    )
+    config = load_daemon_config(config_path)
+    write_pidfile(pidfile_path(config), 1111)
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    proc2 = proc_root / "2222"
+    proc2.mkdir()
+    (proc2 / "cmdline").write_bytes(
+        b"python\x00-m\x00uboot_tftp.cli\x00--config\x00" + str(config.path).encode() + b"\x00"
+    )
+
+    with pytest.raises(ValueError, match="multiple running instances found"):
+        resolve_reload_pid(config, proc_root=proc_root)
 
 
 def test_load_daemon_config_rejects_relative_rootdir(tmp_path):

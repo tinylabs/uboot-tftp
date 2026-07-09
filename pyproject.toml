@@ -33,6 +33,7 @@ dev = [
 
 [project.scripts]
 uboot-tftp = "uboot_tftp.cli:main"
+uboot-tftp-check = "uboot_tftp.check_cli:main"
 uboot-tftp-client = "uboot_tftp.test_client:main"
 uboot-tftp-env = "uboot_tftp.ubootenv_cli:main"
 
