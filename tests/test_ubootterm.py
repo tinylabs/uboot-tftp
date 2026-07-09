@@ -19,15 +19,15 @@ def test_uboot_msg_formats_status_message():
 
 
 def test_uboot_progress_draws_saved_line_progress_bar():
-    assert uboot_progress(3, 10) == 'echo "\x1b8\x1b[J\x1b7[###       ]"'
+    assert uboot_progress(3, 10) == 'echo "\x1b8\x1b[J\x1b7\x1b[32m[###       ]\x1b[0m"'
 
 
 def test_uboot_progress_clamps_to_bar_width():
-    assert uboot_progress(12, 10) == 'echo "\x1b8\x1b[J\x1b7[##########]"'
+    assert uboot_progress(12, 10) == 'echo "\x1b8\x1b[J\x1b7\x1b[32m[##########]\x1b[0m"'
 
 
 def test_uboot_progress_clamps_negative_values():
-    assert uboot_progress(-1, 4) == 'echo "\x1b8\x1b[J\x1b7[    ]"'
+    assert uboot_progress(-1, 4) == 'echo "\x1b8\x1b[J\x1b7\x1b[32m[    ]\x1b[0m"'
 
 
 def test_uboot_msg_can_apply_bold_color():

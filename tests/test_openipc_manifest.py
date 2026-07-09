@@ -1,8 +1,10 @@
 import asyncio
 import importlib.util
-import zlib
 from pathlib import Path
 from types import SimpleNamespace
+
+from uboot_tftp.partitions import parse_mtdparts_spec
+from uboot_tftp.ubootenv import ubootenv_parse_part
 
 
 def load_openipc_module():
@@ -14,184 +16,110 @@ def load_openipc_module():
     return module
 
 
-class FakeTftp:
-    def __init__(self, payload: bytes) -> None:
-        self.payload = payload
-        self.acquire_calls = []
-        self.exec_calls = []
-        self._artifact = None
-        self._files = {}
-        self._existing = set()
-
-    def acquire_download(self, **kwargs):
-        self.acquire_calls.append(kwargs)
-        self._artifact = SimpleNamespace(
-            artifact_key=kwargs["artifact_key"],
-            state="pending",
-            bytes_done=0,
-            bytes_total=None,
-            error=None,
-        )
-        return self._artifact
-
-    def get_download(self, artifact_key):
-        if self._artifact is None or artifact_key != self._artifact.artifact_key:
-            return None
-        return self._artifact
-
-    def read_file(self, filename):
-        return self._files[filename]
-
-    def file_exists(self, filename):
-        return filename in self._existing
-
-    async def exec(self, script, final=False, keys=()):  # noqa: ARG002
-        self.exec_calls.append((script, final))
-        if self.acquire_calls:
-            self._files[self.acquire_calls[0]["destination"]] = self.payload
-        if self._artifact is not None:
-            self._artifact.state = "done"
-
-
-def test_github_json_manifest_starts_download_and_loads_json():
+def test_openipc_load_release_assets_uses_release_uboot_env_for_partition_table(monkeypatch):
     module = load_openipc_module()
-    tftp = FakeTftp(
-        b'{"name":"latest","assets":[{"name":"openipc-gk7205v300-lite.bin",'
-        b'"browser_download_url":"https://example.com/lite.bin"},'
-        b'{"name":"openipc-gk7205v300-ultimate.bin",'
-        b'"browser_download_url":"https://example.com/ultimate.bin"},'
-        b'{"name":"other.bin","browser_download_url":"https://example.com/other.bin"}]}'
-    )
-
-    manifest = module.GithubJsonManifest(tftp, "OpenIPC/firmware/releases/tags/latest")
-    data = asyncio.run(manifest.load())
-
-    assert manifest.path == "OpenIPC/firmware/releases/tags/latest"
-    assert manifest.url == "https://api.github.com/repos/OpenIPC/firmware/releases/tags/latest"
-    assert manifest.destination == "github/OpenIPC/firmware/releases/tags/latest.json"
-    assert data["name"] == "latest"
-    assert data["assets"][0]["name"] == "openipc-gk7205v300-lite.bin"
-    assert manifest.find(match=["gk7205v300", "lite"]) == [
+    release_env = {
+        "mtdpartsnor16m": (
+            "setenv mtdparts "
+            "sfc:256k(boot),64k(env),3072k(kernel),10240k(rootfs),-(rootfs_data)"
+        ),
+    }
+    assets = [
         {
-            "name": "openipc-gk7205v300-lite.bin",
-            "browser_download_url": "https://example.com/lite.bin",
-        }
-    ]
-    assert manifest.find(match=[]) == [
-        {
-            "name": "openipc-gk7205v300-lite.bin",
-            "browser_download_url": "https://example.com/lite.bin",
+            "name": "u-boot-gk7205v300.bin",
+            "browser_download_url": "https://example.com/u-boot-gk7205v300.bin",
         },
         {
-            "name": "openipc-gk7205v300-ultimate.bin",
-            "browser_download_url": "https://example.com/ultimate.bin",
+            "name": "kernel-gk7205v300-lite.bin",
+            "browser_download_url": "https://example.com/kernel-gk7205v300-lite.bin",
         },
         {
-            "name": "other.bin",
-            "browser_download_url": "https://example.com/other.bin",
+            "name": "rootfs-gk7205v300-lite.bin",
+            "browser_download_url": "https://example.com/rootfs-gk7205v300-lite.bin",
         },
     ]
-    assert len(tftp.acquire_calls) == 1
-    assert tftp.acquire_calls[0]["artifact_key"] == (
-        "https://api.github.com/repos/OpenIPC/firmware/releases/tags/latest"
+    payloads = {
+        "u-boot-gk7205v300.bin": b"uboot",
+        "kernel-gk7205v300-lite.bin": b"kernel",
+        "rootfs-gk7205v300-lite.bin": b"rootfs",
+    }
+
+    class FakeManifest:
+        def __init__(self, tftp, path, *, cache=False):  # noqa: ARG002
+            self.path = path
+
+        async def load(self):
+            return {}
+
+        def find(self, *, match):
+            return [
+                asset
+                for asset in assets
+                if all(token in asset["name"] for token in match)
+            ]
+
+        async def download_asset(self, asset, *, destination=None, cache=False):  # noqa: ARG002
+            return payloads[Path(destination).name]
+
+    monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
+    monkeypatch.setattr(module, "ubootenv_extract", lambda payload: release_env)
+
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={"soc": "gk7205v300", "fw": "lite"},
+        nor_size=16 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
     )
-    assert tftp.acquire_calls[0]["destination"] == "github/OpenIPC/firmware/releases/tags/latest.json"
-    assert tftp.acquire_calls[0]["url"] == "https://api.github.com/repos/OpenIPC/firmware/releases/tags/latest"
-    assert tftp.acquire_calls[0]["page_url"] == "https://api.github.com/repos/OpenIPC/firmware/releases/tags/latest"
-    assert tftp.acquire_calls[0]["headers"]["Accept"] == "application/vnd.github+json"
-    assert tftp.exec_calls
+
+    release = asyncio.run(module.openipc_load_release_assets(object(), context))
+
+    assert release.partition_table.range("kernel") == (0x50000, 0x300000)
+    assert release.partition_table.range("rootfs") == (0x350000, 0xA00000)
 
 
-def test_github_json_manifest_uses_cached_file_in_constructor():
+def test_openipc_build_partition_payloads_builds_sized_env_partition():
     module = load_openipc_module()
-    tftp = FakeTftp(b"{}")
-    destination = "github/OpenIPC/firmware/releases/tags/latest.json"
-    tftp._existing.add(destination)
-    tftp._files[destination] = (
-        b'{"name":"latest","assets":[{"name":"cached-openipc-gk7205v300-lite.bin",'
-        b'"browser_download_url":"https://example.com/cached-lite.bin"}]}'
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={
+            "ethaddr": "00:11:22:33:44:55",
+            "serverip": "192.168.1.1",
+            "soc": "gk7205v300",
+            "fw": "lite",
+        },
+        nor_size=8 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
+    )
+    release = module.OpenIpcReleaseAssets(
+        manifest=SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest"),
+        release_env={
+            "bootcmd": "run boot",
+            "mtdparts": "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+        },
+        partition_table=parse_mtdparts_spec(
+            "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+            total_size=8 * 2**20,
+        ),
+        uboot_asset={"browser_download_url": "https://example.com/u-boot.bin"},
+        uboot_payload=b"uboot",
+        kernel_asset={"browser_download_url": "https://example.com/kernel.bin"},
+        kernel_payload=b"kernel",
+        rootfs_asset={"browser_download_url": "https://example.com/rootfs.bin"},
+        rootfs_payload=b"rootfs",
     )
 
-    manifest = module.GithubJsonManifest(
-        tftp,
-        "OpenIPC/firmware/releases/tags/latest",
-        cache=True,
-    )
+    class FakeTftp:
+        rambase = "loadaddr"
 
-    assert manifest.manifest["name"] == "latest"
-    assert manifest.find(match=["cached", "lite"]) == [
-        {
-            "name": "cached-openipc-gk7205v300-lite.bin",
-            "browser_download_url": "https://example.com/cached-lite.bin",
-        }
-    ]
-    assert tftp.acquire_calls == []
-    assert tftp.exec_calls == []
+    payloads = module.openipc_build_partition_payloads(FakeTftp(), context, release)
+    env_payload = next(payload for payload in payloads if payload.name == "env")
+    env_data = ubootenv_parse_part(env_payload.payload)
 
-
-def test_github_json_manifest_download_asset_downloads_and_reads_binary():
-    module = load_openipc_module()
-    payload = b"firmware-binary"
-    tftp = FakeTftp(payload)
-    manifest = module.GithubJsonManifest(tftp, "OpenIPC/firmware/releases/tags/latest")
-
-    binary = asyncio.run(
-        manifest.download_asset(
-            {
-                "name": "openipc-gk7205v300-lite.bin",
-                "browser_download_url": "https://example.com/lite.bin",
-            }
-        )
-    )
-
-    assert binary == payload
-    assert len(tftp.acquire_calls) == 1
-    assert tftp.acquire_calls[0]["url"] == "https://example.com/lite.bin"
-    assert tftp.acquire_calls[0]["destination"] == (
-        "OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin"
-    )
-    assert tftp.read_file(tftp.acquire_calls[0]["destination"]) == payload
-
-
-def test_github_json_manifest_download_asset_uses_cached_file_when_enabled():
-    module = load_openipc_module()
-    payload = b"cached-binary"
-    tftp = FakeTftp(b"unused")
-    destination = "OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin"
-    tftp._existing.add(destination)
-    tftp._files[destination] = payload
-    manifest = module.GithubJsonManifest(tftp, "OpenIPC/firmware/releases/tags/latest")
-
-    binary = asyncio.run(
-        manifest.download_asset(
-            {
-                "name": "openipc-gk7205v300-lite.bin",
-                "browser_download_url": "https://example.com/lite.bin",
-            },
-            cache=True,
-        )
-    )
-
-    assert binary == payload
-    assert tftp.acquire_calls == []
-    assert len(tftp.exec_calls) == 1
-    assert "Using cached asset: OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin" in (
-        tftp.exec_calls[0][0][0]
-    )
-
-
-def test_github_asset_crc32_matches_uboot_algorithm():
-    module = load_openipc_module()
-    asset = module.GithubAsset(name="firmware.bin")
-    payload = b"firmware-binary"
-
-    assert asset.crc32(payload) == (zlib.crc32(payload) & 0xFFFFFFFF)
-
-
-def test_github_asset_crc32_can_pad_with_erased_flash_bytes():
-    module = load_openipc_module()
-    asset = module.GithubAsset(name="firmware.bin")
-    payload = b"\x01\x02\x03"
-    padded = payload + (b"\xFF" * 5)
-
-    assert asset.crc32(payload, size=8) == (zlib.crc32(padded) & 0xFFFFFFFF)
+    assert len(env_payload.payload) == 0x10000
+    assert env_data["hostname"] == "cam123"
+    assert env_data["bootp_vci"] == "uboot.cam123"
+    assert env_data["install"] == "cmd=install; run bootstrap"

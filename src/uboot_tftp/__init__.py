@@ -2,6 +2,16 @@
 
 from .config import DaemonConfig, ScriptRoute, load_daemon_config
 from .download_jobs import DownloadArtifact, DownloadJobStore, DownloadRequest
+from .flashplan import (
+    PartitionDigest,
+    PartitionPayload,
+    PartitionUpdate,
+    PartitionUpdatePlan,
+    build_partition_update_plan,
+    collect_partition_digests,
+    partition_payload_crc32,
+)
+from .github_assets import GithubAsset, GithubJsonManifest
 from .mkimage import LegacyScriptImageCompiler, extract_script_payload
 from .partitions import (
     PartitionEntry,
@@ -52,6 +62,9 @@ __all__ = [
     "DownloadRequest",
     "DynamicContentServer",
     "EnvPartitionInfo",
+    "GithubAsset",
+    "GithubJsonManifest",
+    "PartitionDigest",
     "ubootenv_build",
     "ubootenv_extract",
     "ubootenv_find",
@@ -59,7 +72,10 @@ __all__ = [
     "InMemoryUploadStore",
     "LegacyScriptImageCompiler",
     "PartitionEntry",
+    "PartitionPayload",
     "PartitionTable",
+    "PartitionUpdate",
+    "PartitionUpdatePlan",
     "ParsedPath",
     "ubootenv_parse_export",
     "ubootenv_parse_part",
@@ -82,9 +98,12 @@ __all__ = [
     "uboot_download_url",
     "UploadedFile",
     "UploadRequest",
+    "build_partition_update_plan",
+    "collect_partition_digests",
     "extract_script_payload",
     "load_daemon_config",
     "parse_request_path",
+    "partition_payload_crc32",
     "extract_mtdparts_spec",
     "parse_mtdparts_spec",
 ]
