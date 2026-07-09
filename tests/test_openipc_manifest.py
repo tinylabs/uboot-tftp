@@ -71,12 +71,15 @@ def test_openipc_load_release_assets_uses_release_uboot_env_for_partition_table(
         nor_size=16 * 2**20,
         soc="gk7205v300",
         fw="lite",
+        cache=False,
+        tag="stable",
     )
 
     release = asyncio.run(module.openipc_load_release_assets(object(), context))
 
     assert release.partition_table.range("kernel") == (0x50000, 0x300000)
     assert release.partition_table.range("rootfs") == (0x350000, 0xA00000)
+    assert release.manifest.path == "OpenIPC/firmware/releases/tags/stable"
 
 
 def test_openipc_build_partition_payloads_builds_sized_env_partition():
@@ -93,6 +96,8 @@ def test_openipc_build_partition_payloads_builds_sized_env_partition():
         nor_size=8 * 2**20,
         soc="gk7205v300",
         fw="lite",
+        cache=True,
+        tag="latest",
     )
     release = module.OpenIpcReleaseAssets(
         manifest=SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest"),
@@ -123,3 +128,54 @@ def test_openipc_build_partition_payloads_builds_sized_env_partition():
     assert env_data["hostname"] == "cam123"
     assert env_data["bootp_vci"] == "uboot.cam123"
     assert env_data["install"] == "cmd=install; run bootstrap"
+
+
+def test_openipc_load_release_assets_uses_context_cache_for_manifest_and_assets(monkeypatch):
+    module = load_openipc_module()
+    seen = {"manifest_cache": None, "asset_cache": []}
+
+    class FakeManifest:
+        def __init__(self, tftp, path, *, cache=False):  # noqa: ARG002
+            self.path = path
+            seen["manifest_cache"] = cache
+
+        async def load(self):
+            return {}
+
+        def find(self, *, match):
+            token = match[-1]
+            return [
+                {
+                    "name": f"{token}-gk7205v300.bin",
+                    "browser_download_url": f"https://example.com/{token}-gk7205v300.bin",
+                }
+            ]
+
+        async def download_asset(self, asset, *, destination=None, cache=False):  # noqa: ARG002
+            seen["asset_cache"].append(cache)
+            return b"payload"
+
+    monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
+    monkeypatch.setattr(
+        module,
+        "ubootenv_extract",
+        lambda payload: {
+            "mtdparts": "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+        },
+    )
+
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={"soc": "gk7205v300", "fw": "lite"},
+        nor_size=8 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
+        cache=False,
+        tag="stable",
+    )
+
+    asyncio.run(module.openipc_load_release_assets(object(), context))
+
+    assert seen["manifest_cache"] is False
+    assert seen["asset_cache"] == [False, False, False]

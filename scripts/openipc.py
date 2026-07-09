@@ -20,7 +20,7 @@ from uboot_tftp.ubootops import *
 from uboot_tftp.ubootterm import *
 from uboot_tftp.ubootenv import *
 
-OPENIPC_RELEASE_PATH = "OpenIPC/firmware/releases/tags/latest"
+OPENIPC_RELEASE_PATH_PREFIX = "OpenIPC/firmware/releases/tags"
 FLASH_SNAPSHOT_RAM_OFFSET = 16 * 2**20
 FLASH_STAGE_RAM_OFFSET = 1024
 
@@ -91,6 +91,8 @@ class OpenIpcInstallContext:
         nor_size: int,
         soc: str,
         fw: str,
+        cache: bool,
+        tag: str,
     ) -> None:
         self.ident = ident
         self.cmd = cmd
@@ -98,6 +100,8 @@ class OpenIpcInstallContext:
         self.nor_size = nor_size
         self.soc = soc
         self.fw = fw
+        self.cache = cache
+        self.tag = tag
 
 
 class OpenIpcReleaseAssets:
@@ -265,6 +269,10 @@ async def openipc_collect_install_context(
         raise ValueError("Only 8M or 16M NOR flash supported.")
     if nor_size_mb < 16 and cenv["fw"] == "ultimate":
         raise ValueError("fw=ultimate requires 16M flash")
+    cache = _parse_cache_flag(cenv["cache"])
+    tag = str(cenv["tag"]).strip()
+    if not tag:
+        raise ValueError("tag must not be empty")
 
     return OpenIpcInstallContext(
         ident=ident,
@@ -273,6 +281,8 @@ async def openipc_collect_install_context(
         nor_size=nor_size,
         soc=cenv["soc"],
         fw=cenv["fw"],
+        cache=cache,
+        tag=tag,
     )
 
 
@@ -282,6 +292,19 @@ def _parse_url_filename(url: str) -> str:
     if not name:
         raise ValueError(f"unable to determine filename from URL: {url}")
     return name
+
+
+def _openipc_release_path(tag: str) -> str:
+    return f"{OPENIPC_RELEASE_PATH_PREFIX}/{tag}"
+
+
+def _parse_cache_flag(value: str) -> bool:
+    text = str(value).strip()
+    if text == "1":
+        return True
+    if text == "0":
+        return False
+    raise ValueError(f"cache must be 0 or 1, got: {value!r}")
 
 
 def _asset_destination(manifest: GithubJsonManifest, asset: GithubAsset, soc: str) -> str:
@@ -315,7 +338,11 @@ async def openipc_load_release_assets(
     tftp,
     context: OpenIpcInstallContext,
 ) -> OpenIpcReleaseAssets:
-    manifest = GithubJsonManifest(tftp, path=OPENIPC_RELEASE_PATH, cache=True)
+    manifest = GithubJsonManifest(
+        tftp,
+        path=_openipc_release_path(context.tag),
+        cache=context.cache,
+    )
     await manifest.load()
 
     uboot_asset = openipc_find_release_asset(
@@ -327,7 +354,7 @@ async def openipc_load_release_assets(
     uboot_payload = await manifest.download_asset(
         uboot_asset,
         destination=_asset_destination(manifest, uboot_asset, context.soc),
-        cache=True,
+        cache=context.cache,
     )
     release_env = ubootenv_extract(uboot_payload)
     partition_table = openipc_partition_table(
@@ -345,7 +372,7 @@ async def openipc_load_release_assets(
     kernel_payload = await manifest.download_asset(
         kernel_asset,
         destination=_asset_destination(manifest, kernel_asset, context.soc),
-        cache=True,
+        cache=context.cache,
     )
     rootfs_asset = openipc_find_release_asset(
         manifest,
@@ -356,7 +383,7 @@ async def openipc_load_release_assets(
     rootfs_payload = await manifest.download_asset(
         rootfs_asset,
         destination=_asset_destination(manifest, rootfs_asset, context.soc),
-        cache=True,
+        cache=context.cache,
     )
     return OpenIpcReleaseAssets(
         manifest=manifest,
@@ -579,7 +606,8 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
 
         case 'manifest':
             soc = tftp_env.get ('soc', 'gk7205v300')
-            path='OpenIPC/firmware/releases/tags/latest'
+            tag = tftp_env.get('tag', 'latest')
+            path = _openipc_release_path(tag)
             manifest = GithubJsonManifest(tftp, path=path)
             await manifest.load ()
             matches = manifest.find (match=[soc, 'u-boot'])
