@@ -1,6 +1,6 @@
-Co-authored with ChatGPT Codex.
+[![Co-authored with ChatGPT Codex](https://img.shields.io/badge/co--authored%20with-ChatGPT%20Codex-10a37f)](https://openai.com)
 
-Work in progress. This project is not stable yet.
+This project is still a work in progress. Expect the API, example scripts, and operational details to change while the design is still settling; it should not be considered stable yet.
 
 TODO:
 - probe available commands in preflight
