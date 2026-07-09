@@ -1,4 +1,5 @@
 import gzip
+import zlib
 
 import pytest
 
@@ -99,6 +100,22 @@ def test_build_env_image_round_trips_sized_redundant_image():
     assert env == {
         "bootcmd": "run boot",
         "ipaddr": "192.168.1.50",
+    }
+
+
+def test_build_env_image_can_write_big_endian_crc_header():
+    image = ubootenv_build(
+        {"bootcmd": "run boot", "serverip": "192.168.1.1"},
+        little_endian=False,
+    )
+
+    payload = image[4:]
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+
+    assert image[:4] == crc.to_bytes(4, "big")
+    assert ubootenv_parse_part(image) == {
+        "bootcmd": "run boot",
+        "serverip": "192.168.1.1",
     }
 
 

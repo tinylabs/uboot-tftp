@@ -426,7 +426,11 @@ def openipc_build_partition_payloads(
 
     patched_env = dict(release.release_env)
     openipc_patch_env(tftp, context.ident, context.env, patched_env)
-    env_payload = ubootenv_build(patched_env, size=env_entry.size)
+    env_payload = ubootenv_build(
+        patched_env,
+        size=env_entry.size,
+        little_endian=tftp.is_le,
+    )
 
     return (
         PartitionPayload(

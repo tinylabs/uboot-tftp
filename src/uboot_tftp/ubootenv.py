@@ -111,6 +111,7 @@ def ubootenv_build(
     flags: int | None = None,
     pad_byte: int = 0x00,
     encoding: str = "utf-8",
+    little_endian: bool = True,
 ) -> bytes:
     """Build a CRC-prefixed U-Boot env image from key/value pairs."""
 
@@ -130,7 +131,7 @@ def ubootenv_build(
         data = payload + bytes([pad_byte]) * (data_size - len(payload))
 
     crc = zlib.crc32(data) & 0xFFFFFFFF
-    header = crc.to_bytes(4, "little")
+    header = crc.to_bytes(4, "little" if little_endian else "big")
     if flags is not None:
         header += bytes([flags])
     return header + data
@@ -245,6 +246,7 @@ def ubootenv_patch(
     flags: int | None = None,
     pad_byte: int = 0xFF,
     encoding: str = "utf-8",
+    little_endian: bool = True,
 ) -> bytes:
     """Return a flash image with the env partition replaced."""
 
@@ -261,6 +263,7 @@ def ubootenv_patch(
         flags=flags,
         pad_byte=pad_byte,
         encoding=encoding,
+        little_endian=little_endian,
     )
     return (
         image[: info.offset]

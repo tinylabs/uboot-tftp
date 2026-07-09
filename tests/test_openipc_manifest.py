@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,6 +120,7 @@ def test_openipc_build_partition_payloads_builds_sized_env_partition():
 
     class FakeTftp:
         rambase = "loadaddr"
+        is_le = True
 
     payloads = module.openipc_build_partition_payloads(FakeTftp(), context, release)
     env_payload = next(payload for payload in payloads if payload.name == "env")
@@ -128,6 +130,53 @@ def test_openipc_build_partition_payloads_builds_sized_env_partition():
     assert env_data["hostname"] == "cam123"
     assert env_data["bootp_vci"] == "uboot.cam123"
     assert env_data["install"] == "cmd=install; run bootstrap"
+
+
+def test_openipc_build_partition_payloads_uses_tftp_endianness_for_env_crc():
+    module = load_openipc_module()
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={
+            "ethaddr": "00:11:22:33:44:55",
+            "serverip": "192.168.1.1",
+            "soc": "gk7205v300",
+            "fw": "lite",
+        },
+        nor_size=8 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
+        cache=True,
+        tag="latest",
+    )
+    release = module.OpenIpcReleaseAssets(
+        manifest=SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest"),
+        release_env={
+            "bootcmd": "run boot",
+            "mtdparts": "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+        },
+        partition_table=parse_mtdparts_spec(
+            "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+            total_size=8 * 2**20,
+        ),
+        uboot_asset={"browser_download_url": "https://example.com/u-boot.bin"},
+        uboot_payload=b"uboot",
+        kernel_asset={"browser_download_url": "https://example.com/kernel.bin"},
+        kernel_payload=b"kernel",
+        rootfs_asset={"browser_download_url": "https://example.com/rootfs.bin"},
+        rootfs_payload=b"rootfs",
+    )
+
+    class FakeTftp:
+        rambase = "loadaddr"
+        is_le = False
+
+    payloads = module.openipc_build_partition_payloads(FakeTftp(), context, release)
+    env_payload = next(payload for payload in payloads if payload.name == "env")
+    payload = env_payload.payload[4:]
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+
+    assert env_payload.payload[:4] == crc.to_bytes(4, "big")
 
 
 def test_openipc_load_release_assets_uses_context_cache_for_manifest_and_assets(monkeypatch):
