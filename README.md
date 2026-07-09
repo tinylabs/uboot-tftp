@@ -3,6 +3,8 @@
 This project is still a work in progress. Expect the API, example scripts, and operational details to change while the design is still settling; it should not be considered stable yet.
 
 TODO:
+- Skip u-boot install if not found in specified tag.
+- Set mtdparts uboot env variable based on flash size.
 - probe available commands in preflight.
   - Check $? when running commands without args
 - Add internal handling of `bootstrap` and `bootstrap_onboot` tftp commands.
