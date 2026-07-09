@@ -1,5 +1,7 @@
 import asyncio
 import importlib.util
+import io
+import tarfile
 import zlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -228,3 +230,76 @@ def test_openipc_load_release_assets_uses_context_cache_for_manifest_and_assets(
 
     assert seen["manifest_cache"] is False
     assert seen["asset_cache"] == [False, False, False]
+
+
+def test_openipc_load_release_assets_can_extract_kernel_and_rootfs_from_tgz(monkeypatch):
+    module = load_openipc_module()
+    release_env = {
+        "mtdparts": "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+    }
+    bundle_name = "openipc.gk7205v300-nor-lite.tgz"
+    bundle_payload_io = io.BytesIO()
+    with tarfile.open(fileobj=bundle_payload_io, mode="w:gz") as tar:
+        kernel_payload = b"kernel-image"
+        kernel_info = tarfile.TarInfo(name="uImage.gk7205v300")
+        kernel_info.size = len(kernel_payload)
+        tar.addfile(kernel_info, io.BytesIO(kernel_payload))
+
+        rootfs_payload = b"rootfs-image"
+        rootfs_info = tarfile.TarInfo(name="rootfs.squashfs")
+        rootfs_info.size = len(rootfs_payload)
+        tar.addfile(rootfs_info, io.BytesIO(rootfs_payload))
+    bundle_payload = bundle_payload_io.getvalue()
+
+    assets = [
+        {
+            "name": "u-boot-gk7205v300.bin",
+            "browser_download_url": "https://example.com/u-boot-gk7205v300.bin",
+        },
+        {
+            "name": bundle_name,
+            "browser_download_url": f"https://example.com/{bundle_name}",
+        },
+    ]
+    payloads = {
+        "u-boot-gk7205v300.bin": b"uboot",
+        bundle_name: bundle_payload,
+    }
+
+    class FakeManifest:
+        def __init__(self, tftp, path, *, cache=False):  # noqa: ARG002
+            self.path = path
+
+        async def load(self):
+            return {}
+
+        def find(self, *, match):
+            return [
+                asset
+                for asset in assets
+                if all(token in asset["name"] for token in match)
+            ]
+
+        async def download_asset(self, asset, *, destination=None, cache=False):  # noqa: ARG002
+            return payloads[Path(destination).name]
+
+    monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
+    monkeypatch.setattr(module, "ubootenv_extract", lambda payload: release_env)
+
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={"soc": "gk7205v300", "fw": "lite"},
+        nor_size=8 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
+        cache=True,
+        tag="latest",
+    )
+
+    release = asyncio.run(module.openipc_load_release_assets(object(), context))
+
+    assert release.kernel_payload == b"kernel-image"
+    assert release.rootfs_payload == b"rootfs-image"
+    assert release.kernel_asset["name"] == "uImage.gk7205v300"
+    assert release.rootfs_asset["name"] == "rootfs.squashfs"

@@ -6,7 +6,9 @@ Implements installing openipc on ip cameras
 
 from __future__ import annotations
 
+import io
 import random
+import tarfile
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
@@ -315,6 +317,8 @@ def _asset_destination(manifest: GithubJsonManifest, asset: GithubAsset, soc: st
 def _asset_match_groups(soc: str, fw: str, partition: str) -> list[list[str]]:
     if partition == "uboot":
         return [[soc, "u-boot"], [soc, fw, "u-boot"]]
+    if partition == "firmware_bundle":
+        return [[soc, "nor", fw, ".tgz"], [soc, "nor", fw, ".tar.gz"]]
     return [[soc, fw, partition], [soc, partition]]
 
 
@@ -332,6 +336,55 @@ def openipc_find_release_asset(
     raise ValueError(
         f"unable to resolve a unique {partition} asset for soc={soc} fw={fw}"
     )
+
+
+def _find_release_asset_optional(
+    manifest: GithubJsonManifest,
+    *,
+    soc: str,
+    fw: str,
+    partition: str,
+) -> GithubAsset | None:
+    try:
+        return openipc_find_release_asset(
+            manifest,
+            soc=soc,
+            fw=fw,
+            partition=partition,
+        )
+    except ValueError:
+        return None
+
+
+def _extract_tar_member(
+    archive: bytes,
+    *,
+    kind: str,
+) -> tuple[str, bytes]:
+    aliases = {
+        "kernel": ("kernel", "uimage", "image", "zimage"),
+        "rootfs": ("rootfs", "squashfs", "ubi", "ubifs"),
+    }
+    ignore = ["md5sum"]
+    needles = aliases[kind]
+    matches: list[tuple[str, bytes]] = []
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            name = Path(member.name).name
+            lowered = name.lower()
+            if not any(token in lowered for token in needles) or any(token in lowered for token in ignore):
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            matches.append((name, extracted.read()))
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one {kind} payload in release archive, found {len(matches)}"
+        )
+    return matches[0]
 
 
 async def openipc_load_release_assets(
@@ -363,28 +416,55 @@ async def openipc_load_release_assets(
         flash_size=context.nor_size,
     )
 
-    kernel_asset = openipc_find_release_asset(
+    kernel_asset = _find_release_asset_optional(
         manifest,
         soc=context.soc,
         fw=context.fw,
         partition="kernel",
     )
-    kernel_payload = await manifest.download_asset(
-        kernel_asset,
-        destination=_asset_destination(manifest, kernel_asset, context.soc),
-        cache=context.cache,
-    )
-    rootfs_asset = openipc_find_release_asset(
+    rootfs_asset = _find_release_asset_optional(
         manifest,
         soc=context.soc,
         fw=context.fw,
         partition="rootfs",
     )
-    rootfs_payload = await manifest.download_asset(
-        rootfs_asset,
-        destination=_asset_destination(manifest, rootfs_asset, context.soc),
-        cache=context.cache,
-    )
+    if kernel_asset is not None and rootfs_asset is not None:
+        kernel_payload = await manifest.download_asset(
+            kernel_asset,
+            destination=_asset_destination(manifest, kernel_asset, context.soc),
+            cache=context.cache,
+        )
+        rootfs_payload = await manifest.download_asset(
+            rootfs_asset,
+            destination=_asset_destination(manifest, rootfs_asset, context.soc),
+            cache=context.cache,
+        )
+    else:
+        bundle_asset = openipc_find_release_asset(
+            manifest,
+            soc=context.soc,
+            fw=context.fw,
+            partition="firmware_bundle",
+        )
+        bundle_payload = await manifest.download_asset(
+            bundle_asset,
+            destination=_asset_destination(manifest, bundle_asset, context.soc),
+            cache=context.cache,
+        )
+        kernel_name, kernel_payload = _extract_tar_member(bundle_payload, kind="kernel")
+        rootfs_name, rootfs_payload = _extract_tar_member(bundle_payload, kind="rootfs")
+        kernel_asset = GithubAsset(
+            {
+                "name": kernel_name,
+                "browser_download_url": str(bundle_asset.get("browser_download_url", "")),
+            }
+        )
+        rootfs_asset = GithubAsset(
+            {
+                "name": rootfs_name,
+                "browser_download_url": str(bundle_asset.get("browser_download_url", "")),
+            }
+        )
     return OpenIpcReleaseAssets(
         manifest=manifest,
         release_env=release_env,
@@ -468,7 +548,7 @@ def openipc_format_update_summary(plan) -> list[str]:
     return [
         uboot_msg(
             f"{update.name:<8} 0x{update.offset:08x} size=0x{update.size:08x} "
-            f"src={trunc(update.source, 24)} flash=0x{update.flash_crc32:08x} "
+            f"src={_trunc(update.source, 32):<32} flash=0x{update.flash_crc32:08x} "
             f"payload=0x{update.payload_crc32:08x} {'update' if update.needs_update else 'skip'}"
         )
         for update in plan.updates
