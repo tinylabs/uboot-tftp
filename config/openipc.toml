@@ -11,13 +11,6 @@ log_level = "info"
 rambase    = "baseaddr"
 cmdtftp    = "tftpboot"
 cmdtftpput = "tftpput"
-nfsserver  = 'truenas.lan'
-rootfs     = '/mnt/STORAGE/config/camera/boot/rootfs'
-kernel     = 'uImage.${soc}'
-
-#[cam123]
-#entry_func = "bootnfs"
-#rootfs = '/mnt/STORAGE/config/camera/boot/rootfs.cam123'
 
 [default]
 entry_func = "default"
