@@ -109,7 +109,10 @@ def load_daemon_config(
 
 def check_user_script_syntax(path: str | Path) -> Path:
     script_path = Path(path).resolve()
-    source = script_path.read_text()
+    try:
+        source = script_path.read_text()
+    except FileNotFoundError as error:
+        raise ValueError(f"script file not found: {script_path}") from error
     try:
         ast.parse(source, filename=str(script_path))
     except SyntaxError as error:

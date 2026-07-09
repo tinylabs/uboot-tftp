@@ -35,6 +35,13 @@ def test_check_user_script_syntax_reports_syntax_error(tmp_path):
         check_user_script_syntax(script)
 
 
+def test_check_user_script_syntax_reports_missing_file(tmp_path):
+    script = tmp_path / "missing.py"
+
+    with pytest.raises(ValueError, match=r"script file not found: .*missing\.py"):
+        check_user_script_syntax(script)
+
+
 def test_check_cli_validates_config_and_script(tmp_path, capsys):
     script = tmp_path / "script.py"
     script.write_text(
@@ -94,6 +101,32 @@ def test_check_cli_surfaces_script_syntax_errors(tmp_path, capsys):
 
     assert exit_code == 1
     assert "python syntax error" in capsys.readouterr().err
+
+
+def test_check_cli_surfaces_missing_script_file(tmp_path, capsys):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[server]",
+                'scriptfile = "missing.py"',
+                f'rootdir = "{(tmp_path / "root").resolve()}"',
+                "",
+                "[env]",
+                'rambase = "baseaddr"',
+                'cmdtftp = "tftpboot"',
+                'cmdtftpput = "tftpput"',
+                "",
+                "[default]",
+                'entry_func = "default"',
+            )
+        )
+    )
+
+    exit_code = main(["--config", str(config_path)])
+
+    assert exit_code == 1
+    assert "script file not found:" in capsys.readouterr().err
 
 
 def test_check_cli_rejects_unknown_server_keys(tmp_path, capsys):

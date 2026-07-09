@@ -8,12 +8,12 @@ retries = 3
 log_level = "info"
 
 [env]
-rambase = "baseaddr"
-cmdtftp = "tftpboot"
+rambase    = "baseaddr"
+cmdtftp    = "tftpboot"
 cmdtftpput = "tftpput"
-nfsserver = 'truenas.lan'
-rootfs = '/mnt/STORAGE/config/camera/boot/rootfs'
-kernel = 'uImage.${soc}'
+nfsserver  = 'truenas.lan'
+rootfs     = '/mnt/STORAGE/config/camera/boot/rootfs'
+kernel     = 'uImage.${soc}'
 
 #[cam123]
 #entry_func = "bootnfs"
