@@ -525,7 +525,7 @@ def openipc_build_partition_payloads(
             offset=env_entry.offset,
             size=env_entry.size,
             payload=env_payload,
-            source=f"{context.ident}-env.bin",
+            source=f"{context.ident}.bin",
         ),
         PartitionPayload(
             name="kernel",
@@ -556,7 +556,7 @@ def openipc_format_update_summary(plan) -> list[str]:
 
 
 def _stage_partition_filename(ident: str, update: PartitionUpdate) -> str:
-    return f"install/{ident}-{update.name}-{Path(update.source).name}"
+    return f"install/{update.name}-{Path(update.source).name}"
 
 
 async def openipc_flash_partition(tftp, ident: str, update: PartitionUpdate) -> None:
