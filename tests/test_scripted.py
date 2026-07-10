@@ -379,6 +379,35 @@ def test_exec_can_request_return_keys_for_next_rrq(tmp_path):
     assert "echo filesize 1235" in second
 
 
+def test_exec_returns_true_without_requires(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    ok = await tftp.exec(['echo step1'])",
+                "    await tftp.exec([f'echo ok {ok}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "echo step1" in first
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    assert "echo ok True" in second
+
+
 def test_target_route_overrides_transport_env_for_new_session(tmp_path):
     script = tmp_path / "script.py"
     script.write_text(
@@ -1045,5 +1074,249 @@ def test_check_cmds_uses_configured_rambase_variable_for_probes(tmp_path):
         )
     )
 
-    assert "sf read ${baseaddr} 0x0 0x0" in script_text
+    assert "sf read ${baseaddr} 0x0 0x1" in script_text
     assert "${loadaddr}" not in script_text
+
+
+def test_check_cmds_treats_unknown_commands_as_unsupported(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    supported = await tftp.check_cmds(['bootflow scan', 'source'])",
+                "    await tftp.exec([f'echo supported {\"|\".join(supported)}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = start_session_script(provider, "id=cam123/bootstrap")
+    assert "bootflow scan" not in script
+    assert "echo supported source|true|if|echo|tftpboot" in script
+
+
+def test_exec_requires_treats_unknown_commands_as_unavailable(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo guarded'], requires=['bootflow scan'])",
+                "    await tftp.exec(['echo fallback'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = start_session_script(provider, "id=cam123/bootstrap")
+    assert "echo guarded" not in script
+    assert "required commands unavailable: bootflow scan" in script
+    assert "echo fallback" not in script
+
+    token_match = TOKEN_RE.search(script)
+    assert token_match is not None
+    token = token_match.group(1)
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    assert "echo fallback" in second
+
+
+def test_exec_checked_returns_true_when_guarded_body_runs(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    ok = await tftp.exec(['echo guarded'], requires=['source'])",
+                "    await tftp.exec([f'echo checked {ok}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "echo guarded" in first
+    status_key = next(
+        segment.split("=${", 1)[0].rsplit("/", 1)[-1]
+        for segment in first.split('"')
+        if "/__uboot_tftp_exec_status_" in segment
+    )
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/{status_key}=1")))
+    assert "echo checked True" in second
+
+
+def test_exec_checked_returns_false_when_guarded_body_is_skipped(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    ok = await tftp.exec(['echo guarded'], requires=['bootflow scan'])",
+                "    await tftp.exec([f'echo checked {ok}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "echo guarded" not in first
+    status_key = next(
+        segment.split("=${", 1)[0].rsplit("/", 1)[-1]
+        for segment in first.split('"')
+        if "/__uboot_tftp_exec_status_" in segment
+    )
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/{status_key}=0")))
+    assert "echo checked False" in second
+
+
+def test_exec_requires_final_true_remains_fire_and_forget(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo bad'], requires=['bootflow scan'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = start_session_script(provider, "id=cam123/bootstrap")
+    assert "echo bad" not in script
+    assert "required commands unavailable: bootflow scan" in script
+
+
+def test_exec_requires_skips_body_and_continues_on_missing_command(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo guarded'], requires=['sf write'])",
+                "    await tftp.exec(['echo fallback'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "sf write ${loadaddr} 0x0 0x0" in first
+    assert "echo guarded" in first
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_c0=1")))
+    assert "echo fallback" in second
+
+
+def test_exec_requires_uses_cached_unsupported_result_without_reprobe(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo first'], requires=['sf write'])",
+                "    await tftp.exec(['echo second'], requires=['sf write'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_c0=1")))
+    assert "sf write ${loadaddr} 0x0 0x0" not in second
+    assert "echo second" not in second
+    assert "required commands unavailable: sf write" in second
+
+
+def test_exec_recv_requires_uses_failure_continuation_for_missing_command(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "from uboot_tftp.scripted import ReceiveFailedError",
+                "",
+                "async def handler(tftp, ident, cmd, env):",
+                "    try:",
+                "        await tftp.exec_recv(['echo upload'], 8, requires=['cmdtftpput'])",
+                "    except ReceiveFailedError:",
+                "        await tftp.exec(['echo fallback'], final=True)",
+                "        return",
+                "    await tftp.exec(['echo unexpected'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "tftpput ${loadaddr} 0x0 _null" in first
+    assert "echo upload" in first
+    assert "/recv=failed/_c0=${_c0}" in first
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/recv=failed/_c0=1")))
+    assert "echo fallback" in second
+    assert "echo unexpected" not in second

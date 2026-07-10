@@ -2,6 +2,7 @@ from uboot_tftp.ubootcmds import (
     build_probe_batch,
     command_registry,
     framework_emitted_commands,
+    normalize_requested_commands,
 )
 
 
@@ -25,7 +26,7 @@ def test_every_probe_entry_has_probe_script_and_return_key():
 
 def test_probe_batch_uses_configured_rambase_variable():
     lines, _, _ = build_probe_batch(["sf read", "env export"], {"rambase": "baseaddr"})
-    assert "sf read ${baseaddr} 0x0 0x0" in lines
+    assert "sf read ${baseaddr} 0x0 0x1" in lines
     assert "env export -t ${baseaddr}" in lines
 
 
@@ -35,6 +36,21 @@ def test_setexpr_probe_captures_status_from_setexpr_itself():
         "setexpr __uboot_tftp_probe 1 + 1",
         f"setenv {keys[0]} $?",
     ]
+
+
+def test_normalize_requested_commands_preserves_bootflow_subcommand():
+    assert normalize_requested_commands(["bootflow list"], {}) == ["bootflow list"]
+
+
+def test_multitoken_specs_encode_their_normalization_prefix():
+    registry = command_registry()
+    assert "env export" in registry
+    assert "sf read" in registry
+    assert "bootflow list" in registry
+
+
+def test_normalize_requested_commands_preserves_unknown_multitoken_command_text():
+    assert normalize_requested_commands(["bootflow scan"], {}) == ["bootflow scan"]
 
 
 def test_every_config_alias_has_config_key():

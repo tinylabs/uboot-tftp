@@ -39,6 +39,7 @@ class _ExecutionRequest:
     receive_size: int | None = None
     return_keys: tuple[str, ...] = ()
     receive_offset: int | str | None = None
+    required_cmds: tuple[str, ...] = ()
 
     @property
     def expects_upload(self) -> bool:
@@ -118,12 +119,14 @@ class SessionHandle:
         *,
         final: bool = False,
         keys: Iterable[str] = (),
-    ) -> None:
-        await _ExecutionAwaitable(
+        requires: Iterable[str] = (),
+    ) -> bool:
+        return await _ExecutionAwaitable(
             _ExecutionRequest(
                 script=_join_script_lines(script),
                 final=final,
                 return_keys=_normalize_return_keys(keys),
+                required_cmds=_normalize_required_cmds(requires),
             )
         )
 
@@ -135,6 +138,7 @@ class SessionHandle:
         final: bool = False,
         keys: Iterable[str] = (),
         offset: int | str | None = None,
+        requires: Iterable[str] = (),
     ) -> bytes:
         if final:
             raise ValueError("exec_recv(..., final=True) is not supported")
@@ -145,6 +149,7 @@ class SessionHandle:
                 receive_size=size,
                 return_keys=_normalize_return_keys(keys),
                 receive_offset=offset,
+                required_cmds=_normalize_required_cmds(requires),
             )
         )
         if result is None:
@@ -241,7 +246,12 @@ class SessionHandle:
                 continue
             if command in self.session.unsupported_cmds:
                 continue
-            spec = get_command_spec(command)
+            try:
+                spec = get_command_spec(command)
+            except ValueError:
+                self.session.supported_cmds.discard(command)
+                self.session.unsupported_cmds.add(command)
+                continue
             if spec.policy == "assumed":
                 self.session.supported_cmds.add(command)
                 continue
@@ -311,6 +321,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
             raise FileNotFoundError(f"invalid session token for {parsed.client_id!r}")
         session.record_rrq(parsed)
         _merge_continuation_values(session, parsed)
+        _consume_pending_command_probes(session)
         if session.preflight_pending:
             session.preflight_pending = False
             if session.env.get("hush_shell") != "true":
@@ -331,15 +342,15 @@ class ScriptedSessionProvider(DynamicContentProvider):
                 send_value = None
             session.pending_receive = None
             return self._advance_session(session, send_value)
-        return self._advance_session(session, None)
+        return self._advance_session(session, _consume_exec_status(session))
 
     def _advance_session(
         self,
         session: ClientSession,
-        send_value: bytes | None,
+        send_value: object,
     ) -> ContentResult:
         try:
-            if send_value is None:
+            if send_value is _NO_EXEC_RESULT:
                 instruction = session.handler.send(None)
             else:
                 instruction = session.handler.send(send_value)
@@ -398,6 +409,8 @@ class ScriptedSessionProvider(DynamicContentProvider):
         if not isinstance(instruction, _ExecutionRequest):
             raise TypeError("session handlers must await tftp.exec(...) helpers")
         script = instruction.script.rstrip()
+        return_keys = instruction.return_keys
+        session.pending_exec_status_key = None
         if instruction.expects_upload:
             token = _new_token()
             session.current_token = token
@@ -408,23 +421,46 @@ class ScriptedSessionProvider(DynamicContentProvider):
                 size=instruction.receive_size or 0,
             )
             session.phase = "await_upload"
-            script = self._append_receive(
+            script, return_keys = self._append_receive(
                 script,
                 session,
-                instruction.return_keys,
+                return_keys,
                 instruction.receive_offset,
+                instruction.required_cmds,
             )
         elif instruction.final:
             session.phase = "complete"
+            script, return_keys = _apply_required_command_guards(
+                session,
+                script,
+                instruction.required_cmds,
+                return_keys,
+            )
             self._discard_session(session)
         else:
             session.current_token = _new_token()
             session.phase = "await_rrq"
+            failure_status_script = None
+            if instruction.required_cmds and not instruction.final:
+                status_key = _new_tmp_name("exec_status")
+                session.pending_exec_status_key = status_key
+                script = _join_script_lines((script, f"setenv {status_key} 1"))
+                return_keys = return_keys + (status_key,)
+                failure_status_script = f"setenv {status_key} 0"
+            else:
+                session.pending_exec_status_key = ""
+            script, return_keys = _apply_required_command_guards(
+                session,
+                script,
+                instruction.required_cmds,
+                return_keys,
+                on_failure_script=failure_status_script,
+            )
             script = self._append_continue(
                 script,
                 session,
                 recv_status=None,
-                return_keys=instruction.return_keys,
+                return_keys=return_keys,
             )
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
 
@@ -470,10 +506,41 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session: ClientSession,
         return_keys: tuple[str, ...],
         receive_offset: int | str | None,
-    ) -> str:
+        required_cmds: tuple[str, ...],
+    ) -> tuple[str, tuple[str, ...]]:
         pending = session.pending_receive
         if pending is None:
             raise RuntimeError("missing pending receive state")
+        upload_address, prelude, cleanup = _receive_address(session, receive_offset)
+        missing, probe_commands = _plan_required_commands(session, required_cmds)
+        if missing:
+            failure = self._continue_command(
+                session=session,
+                recv_status="failed",
+                return_keys=return_keys,
+            )
+            guarded_body = _join_script_lines((*_required_command_error_lines(missing), failure))
+            return _join_script_lines((prelude, guarded_body, cleanup)), return_keys
+
+        if probe_commands:
+            probe_lines, probe_keys, key_map = build_probe_batch(
+                probe_commands,
+                session.env,
+                key_prefix="_c",
+            )
+            session.pending_command_probes = {key: command for command, key in key_map.items()}
+            return_keys = return_keys + tuple(probe_keys)
+            ok_var = _new_tmp_name("cmds_ok")
+            checks = [f"setenv {ok_var} 1"]
+            for key in probe_keys:
+                checks.append(f"if test ${{{key}}} -ne 0; then setenv {ok_var} 0; fi")
+        else:
+            session.pending_command_probes.clear()
+            probe_lines = []
+            probe_keys = []
+            checks = []
+            ok_var = None
+
         upload_remote = f"id={session.client_id}/token={pending.token}{pending.upload_path}"
         success = self._continue_command(
             session=session,
@@ -485,7 +552,6 @@ class ScriptedSessionProvider(DynamicContentProvider):
             recv_status="failed",
             return_keys=return_keys,
         )
-        upload_address, prelude, cleanup = _receive_address(session, receive_offset)
         receive = (
             f'if {session.env["cmdtftpput"]} {upload_address} {_format_uboot_number(pending.size)} '
             f'"{session.server_ip}:{upload_remote}";\n'
@@ -495,7 +561,23 @@ class ScriptedSessionProvider(DynamicContentProvider):
             f"    {failure}\n"
             f"fi"
         )
-        return _join_script_lines((script, prelude, receive, cleanup))
+        if probe_commands:
+            failure_lines = _probe_failure_lines(probe_keys, key_map)
+            guarded_body = _join_script_lines(
+                (
+                    *probe_lines,
+                    *checks,
+                    f"if test ${{{ok_var}}} -eq 1; then",
+                    _indent_script(_join_script_lines((script, receive))),
+                    "else",
+                    _indent_script(_join_script_lines((*failure_lines, failure))),
+                    "fi",
+                    f"setenv {ok_var}",
+                )
+            )
+        else:
+            guarded_body = _join_script_lines((script, receive))
+        return _join_script_lines((prelude, guarded_body, cleanup)), return_keys
 
     def _route_for(self, client_id: str | None):
         return self.config.default if client_id is None else self.config.routes.get(
@@ -619,10 +701,152 @@ def _normalize_return_keys(keys: Iterable[str]) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+def _normalize_required_cmds(cmds: Iterable[str]) -> tuple[str, ...]:
+    return tuple(str(cmd) for cmd in cmds if str(cmd).strip())
+
+
 def _append_return_keys(path: str, keys: tuple[str, ...]) -> str:
     for key in keys:
         path = f"{path}/{key}=${{{key}}}"
     return path
+
+
+def _consume_pending_command_probes(session: ClientSession) -> None:
+    if not session.pending_command_probes:
+        return
+    for key, command in list(session.pending_command_probes.items()):
+        status = session.env.pop(key, None)
+        session.public_env.pop(key, None)
+        if status == "0":
+            session.unsupported_cmds.discard(command)
+            session.supported_cmds.add(command)
+        elif status is not None:
+            session.supported_cmds.discard(command)
+            session.unsupported_cmds.add(command)
+    session.pending_command_probes.clear()
+
+
+def _consume_exec_status(session: ClientSession) -> object:
+    key = session.pending_exec_status_key
+    if key is None:
+        return _NO_EXEC_RESULT
+    session.pending_exec_status_key = None
+    if key == "":
+        return True
+    status = session.env.pop(key, None)
+    session.public_env.pop(key, None)
+    return status == "1"
+
+
+def _apply_required_command_guards(
+    session: ClientSession,
+    script: str,
+    required_cmds: tuple[str, ...],
+    return_keys: tuple[str, ...],
+    *,
+    failure_script: str | None = None,
+    on_failure_script: str | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    if not required_cmds:
+        session.pending_command_probes.clear()
+        return script, return_keys
+
+    missing, probe_commands = _plan_required_commands(session, required_cmds)
+
+    if missing:
+        session.pending_command_probes.clear()
+        return _join_script_lines(
+            (on_failure_script, *_required_command_error_lines(missing), failure_script)
+        ), return_keys
+
+    if not probe_commands:
+        session.pending_command_probes.clear()
+        return script, return_keys
+
+    probe_lines, probe_keys, key_map = build_probe_batch(
+        probe_commands,
+        session.env,
+        key_prefix="_c",
+    )
+    session.pending_command_probes = {key: command for command, key in key_map.items()}
+    ok_var = _new_tmp_name("cmds_ok")
+    checks = [f"setenv {ok_var} 1"]
+    for key in probe_keys:
+        checks.append(f"if test ${{{key}}} -ne 0; then setenv {ok_var} 0; fi")
+    failure_lines = _probe_failure_lines(probe_keys, key_map)
+    wrapped = _join_script_lines(
+        (
+            *probe_lines,
+            *checks,
+            f"if test ${{{ok_var}}} -eq 1; then",
+            _indent_script(script),
+            "else",
+            _indent_script(_join_script_lines((on_failure_script, *failure_lines, failure_script))),
+            "fi",
+            f"setenv {ok_var}",
+        )
+    )
+    return wrapped, return_keys + tuple(probe_keys)
+
+
+def _plan_required_commands(
+    session: ClientSession,
+    required_cmds: tuple[str, ...],
+) -> tuple[list[str], list[str]]:
+    commands = normalize_requested_commands(list(required_cmds), session.env)
+    session_proven = set(normalize_requested_commands(["cmdtftp"], session.env))
+    missing: list[str] = []
+    probe_commands: list[str] = []
+    for command in commands:
+        if command in session_proven:
+            session.unsupported_cmds.discard(command)
+            session.supported_cmds.add(command)
+            continue
+        if command in session.supported_cmds:
+            continue
+        if command in session.unsupported_cmds:
+            missing.append(command)
+            continue
+        try:
+            spec = get_command_spec(command)
+        except ValueError:
+            session.supported_cmds.discard(command)
+            session.unsupported_cmds.add(command)
+            missing.append(command)
+            continue
+        if spec.policy == "assumed":
+            session.unsupported_cmds.discard(command)
+            session.supported_cmds.add(command)
+            continue
+        if spec.policy == "probe":
+            probe_commands.append(command)
+            continue
+        raise ValueError(f"unexpected command policy for {command!r}: {spec.policy}")
+    return missing, probe_commands
+
+
+def _required_command_error_lines(commands: list[str]) -> list[str]:
+    return [uboot_err(f"uboot-tftp: required commands unavailable: {', '.join(commands)}")]
+
+
+def _probe_failure_lines(probe_keys: list[str], key_map: dict[str, str]) -> list[str]:
+    reverse_map = {key: command for command, key in key_map.items()}
+    lines: list[str] = []
+    for key in probe_keys:
+        command = reverse_map[key]
+        lines.append(f"if test ${{{key}}} -ne 0; then")
+        lines.append(f"    {uboot_err(f'uboot-tftp: required command unavailable: {command}')}")
+        lines.append("fi")
+    return lines
+
+
+def _indent_script(script: str | None) -> str:
+    if not script:
+        return ""
+    return "\n".join(f"    {line}" if line else "" for line in script.splitlines())
+
+
+_NO_EXEC_RESULT = object()
 
 
 def _receive_address(
