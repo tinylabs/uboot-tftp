@@ -3,7 +3,7 @@
 This project is still a work in progress. Expect the API, example scripts, and operational details to change while the design is still settling; it should not be considered stable yet.
 
 TODO:
-- Skip u-boot install if not found in specified tag.
+- Use u-boot from latest tag if selected tag doesn't contain it on install.
 - Set mtdparts uboot env variable based on flash size.
 - probe available commands in preflight.
   - Check $? when running commands without args
@@ -18,7 +18,11 @@ TODO:
   - Hosted locally only via python fastapi.
 - Add script logging per session.
 - Generate FIT image with recorded scripts and orchestrator.
+- Add tftp.exec_queue() for non-blocking functions. ie: echo, etc
+  - Queue commands until exec happens. Flush commands on completion.
+- Fix filename on extracted kernel/rootfs.
 
+  
 # uboot-tftp
 
 Minimal session-aware TFTP server for OpenIPC and U-Boot style workflows.
