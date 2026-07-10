@@ -43,13 +43,13 @@ async def uboot_download_url(
     """ Download a URL and return the payload, print status to console. """
     
     if cache and tftp.file_exists(filepath):
-        await tftp.exec([uboot_msg(f"Using cached download: {filepath}", bold=True)])
+        tftp.exec_queue([uboot_msg(f"Using cached download: {filepath}", bold=True)])
         return tftp.read_file(filepath)
 
     if msg := url_validate(url):
-        await tftp.exec([uboot_err(msg)])
+        tftp.exec_queue([uboot_err(msg)])
     if page_url and (msg := url_validate(page_url)):
-        await tftp.exec([uboot_err(msg)])
+        tftp.exec_queue([uboot_err(msg)])
     if msg:
         return b''
     
@@ -61,7 +61,7 @@ async def uboot_download_url(
         page_url=page_url,
         headers=headers,
     )
-    await tftp.exec([uboot_msg(f"Downloading {filepath}: ", nl=False, bold=True)])
+    tftp.exec_queue([uboot_msg(f"Downloading {filepath}: ", nl=False, bold=True)])
     while True:
         artifact = tftp.get_download(artifact_key)
         await tftp.exec(_download_progress_lines(artifact))
@@ -88,6 +88,7 @@ async def uboot_nor_download(
         *_normalize_cmds(post_cmds),
     ]
     return await tftp.exec_recv(script=script, size=size, requires=requires)
+        
 
 
 async def uboot_nor_probe(

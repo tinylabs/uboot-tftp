@@ -408,6 +408,144 @@ def test_exec_returns_true_without_requires(tmp_path):
     assert "echo ok True" in second
 
 
+def test_exec_queue_prepends_once_and_clears_on_exec(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    tftp.exec_queue(['echo queued1', 'echo queued2'])",
+                "    await tftp.exec(['echo body'])",
+                "    await tftp.exec(['echo next'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    assert first.index("echo queued1") < first.index("echo queued2") < first.index("echo body")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    assert "echo queued1" not in second
+    assert "echo queued2" not in second
+    assert "echo next" in second
+
+
+def test_exec_queue_merges_requires_into_next_exec(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    tftp.exec_queue(['echo queued'], requires=['bootflow scan'])",
+                "    ok = await tftp.exec(['echo body'])",
+                "    await tftp.exec([f'echo checked {ok}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    assert "echo queued" not in first
+    assert "echo body" not in first
+    assert "required commands unavailable: bootflow scan" in first
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    assert "echo checked False" in second
+
+
+def test_exec_queue_is_consumed_by_exec_recv(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "from uboot_tftp.scripted import ReceiveFailedError",
+                "",
+                "async def handler(tftp, ident, cmd, env):",
+                "    tftp.exec_queue(['echo queued'])",
+                "    try:",
+                "        await tftp.exec_recv(['echo upload'], 8)",
+                "    except ReceiveFailedError:",
+                "        await tftp.exec(['echo fallback'], final=True)",
+                "        return",
+                "    await tftp.exec(['echo done'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    uploads = InMemoryUploadStore(sessions)
+    provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    assert first.index("echo queued") < first.index("echo upload")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/recv=failed")))
+    assert "echo queued" not in second
+    assert "echo fallback" in second
+
+
+def test_exec_queue_merges_requires_into_next_exec_recv(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "from uboot_tftp.scripted import ReceiveFailedError",
+                "",
+                "async def handler(tftp, ident, cmd, env):",
+                "    tftp.exec_queue(['echo queued'], requires=['bootflow scan'])",
+                "    try:",
+                "        await tftp.exec_recv(['echo upload'], 8)",
+                "    except ReceiveFailedError:",
+                "        await tftp.exec(['echo fallback'], final=True)",
+                "        return",
+                "    await tftp.exec(['echo unexpected'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    uploads = InMemoryUploadStore(sessions)
+    provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    assert "echo queued" not in first
+    assert "echo upload" not in first
+    assert "required commands unavailable: bootflow scan" in first
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/recv=failed")))
+    assert "echo fallback" in second
+    assert "echo unexpected" not in second
+
+
 def test_target_route_overrides_transport_env_for_new_session(tmp_path):
     script = tmp_path / "script.py"
     script.write_text(
@@ -1016,12 +1154,12 @@ def test_check_cmds_keeps_unsupported_probed_commands_omitted_on_later_calls(tmp
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
-    assert "sf write ${loadaddr} 0x0 0x0" in first
+    assert "sf probe 0" in first
 
     second = script_from_result(
         provider.fetch(request(f"id=cam123/token={token}/_0=1"))
     )
-    assert "sf write ${loadaddr} 0x0 0x0" not in second
+    assert "sf probe 0" not in second
     assert "echo first source|true|if|echo|tftpboot" in second
     assert "echo second source|true|if|echo|tftpboot" in second
 
@@ -1247,7 +1385,7 @@ def test_exec_requires_skips_body_and_continues_on_missing_command(tmp_path):
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
-    assert "sf write ${loadaddr} 0x0 0x0" in first
+    assert "sf probe 0" in first
     assert "echo guarded" in first
 
     second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_c0=1")))

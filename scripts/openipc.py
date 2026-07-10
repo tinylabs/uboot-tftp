@@ -24,7 +24,7 @@ from uboot_tftp.ubootenv import *
 
 OPENIPC_RELEASE_PATH_PREFIX = "OpenIPC/firmware/releases/tags"
 FLASH_SNAPSHOT_RAM_OFFSET = 16 * 2**20
-FLASH_STAGE_RAM_OFFSET = 1024
+FLASH_STAGE_RAM_OFFSET = 1 * 2**20
 
 
 def openipc_partition_table(
@@ -144,11 +144,10 @@ async def openipc_nor_backup (tftp, sz: int, filename: str='', final=False) -> b
     )
     filename = f'backup/{filename}'
     tftp.write_file (filename, binary)
-    await tftp.exec([
-        uboot_msg (f'  Saved backup as {filename}')
-    ], final=final)
+    msg = uboot_msg (f'  Saved backup as {filename}')
+    await tftp.exec([msg], final=True) if final else tftp.exec_queue([msg])
 
-async def openipc_nor_restore (tftp, filename: str, sz: int):
+async def openipc_nor_restore (tftp, filename: str, sz: int, final=False):
     requires = []
     script = [
         uboot_msg (f"Uploading {Path(filename).name}... ", nl=False, bold=True),
@@ -161,7 +160,7 @@ async def openipc_nor_restore (tftp, filename: str, sz: int):
         uboot_nor_write (tftp, nor_offset=0, ram_offset=1024, size=sz, requires=requires),
         uboot_msg ("OK"),
     ]
-    await tftp.exec (script, requires=requires)
+    await tftp.exec (script, requires=requires, final=True) if final else tftp.exec_queue(script, requires=requires)
 
 def build_runcmd(cmd: str, args: str=''):
     parts = [f"cmd={cmd}"]
@@ -244,7 +243,7 @@ async def openipc_collect_install_context(
             uboot_msg("Fetching current uboot environment... ", nl=False, bold=True),
         ]
     )
-    await tftp.exec([uboot_msg("OK")])
+    tftp.exec_queue([uboot_msg("OK")])
 
     keys = ["nor_size", "fw", "soc", "cache", "tag"]
     cenv.update({k: tftp_env[k] for k in keys if k in tftp_env})
@@ -489,10 +488,13 @@ def _require_partition(table: PartitionTable, *names: str) -> PartitionEntry:
 
 
 def _source_name(asset: GithubAsset) -> str:
+    name = str(asset.get("name", "")).strip()
+    if name:
+        return name
     url = str(asset.get("browser_download_url", "")).strip()
     if url:
         return _parse_url_filename(url)
-    return str(asset.get("name", "")).strip()
+    return ""
 
 
 def openipc_build_partition_payloads(
@@ -526,7 +528,7 @@ def openipc_build_partition_payloads(
             offset=env_entry.offset,
             size=env_entry.size,
             payload=env_payload,
-            source=f"{context.ident}.bin",
+            source=f"{context.ident}-env.bin",
         ),
         PartitionPayload(
             name="kernel",
@@ -557,14 +559,14 @@ def openipc_format_update_summary(plan) -> list[str]:
 
 
 def _stage_partition_filename(ident: str, update: PartitionUpdate) -> str:
-    return f"install/{update.name}-{Path(update.source).name}"
+    return f"install/{Path(update.source).name}"
 
 
 async def openipc_flash_partition(tftp, ident: str, update: PartitionUpdate) -> None:
     filename = _stage_partition_filename(ident, update)
     tftp.write_file(filename, update.payload)
     requires = []
-    await tftp.exec(
+    tftp.exec_queue(
         [
             uboot_msg(f"Uploading {Path(filename).name}... ", nl=False, bold=True),
             uboot_fetch_static(tftp, filename, offset=FLASH_STAGE_RAM_OFFSET, requires=requires),
@@ -594,7 +596,7 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
         context = await openipc_collect_install_context(tftp, ident, cmd, tftp_env)
         release = await openipc_load_release_assets(tftp, context)
         payloads = openipc_build_partition_payloads(tftp, context, release)
-        await tftp.exec([
+        tftp.exec_queue([
             uboot_msg("Copying NOR flash to RAM... ", bold=True, nl=False),
             uboot_nor_read(
                 tftp,
@@ -611,12 +613,10 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             snapshot_base_addr=tftp.rambase_addr + FLASH_SNAPSHOT_RAM_OFFSET,
             key_prefix="openipc_",
         )
-        await tftp.exec(
-            [
+        tftp.exec_queue([
                 uboot_msg("Partition update plan:", bold=True),
                 *openipc_format_update_summary(plan),
-            ]
-        )
+        ])
         pending = plan.pending()
         if not pending:
             await tftp.exec(
@@ -626,7 +626,7 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             return
         for update in pending:
             await openipc_flash_partition(tftp, ident, update)
-        await tftp.exec(
+        tftp.exec_queue(
             [
                 uboot_msg(),
                 uboot_msg(f"Install finished for {ident}", bold=True),

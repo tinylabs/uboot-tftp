@@ -12,9 +12,11 @@ class FakeTftp:
         self.payload = payload
         self.acquire_calls = []
         self.exec_calls = []
+        self.exec_queue_calls = []
         self._artifact = None
         self._files = {}
         self._existing = set()
+        self._queued_scripts = []
 
     def acquire_download(self, **kwargs):
         self.acquire_calls.append(kwargs)
@@ -38,8 +40,14 @@ class FakeTftp:
     def file_exists(self, filename):
         return filename in self._existing
 
+    def exec_queue(self, script, requires=None):  # noqa: ARG002
+        self.exec_queue_calls.append((script, requires))
+        self._queued_scripts.extend(script)
+
     async def exec(self, script, final=False, keys=()):  # noqa: ARG002
-        self.exec_calls.append((script, final))
+        full_script = [*self._queued_scripts, *script]
+        self._queued_scripts.clear()
+        self.exec_calls.append((full_script, final))
         if self.acquire_calls:
             self._files[self.acquire_calls[0]["destination"]] = self.payload
         if self._artifact is not None:
@@ -163,9 +171,10 @@ def test_github_json_manifest_download_asset_uses_cached_file_when_enabled():
 
     assert binary == payload
     assert tftp.acquire_calls == []
-    assert len(tftp.exec_calls) == 1
+    assert tftp.exec_calls == []
+    assert len(tftp.exec_queue_calls) == 1
     assert "Using cached asset: OpenIPC/firmware/releases/tags/latest/openipc-gk7205v300-lite.bin" in (
-        tftp.exec_calls[0][0][0]
+        tftp.exec_queue_calls[0][0][0]
     )
 
 

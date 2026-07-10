@@ -105,7 +105,7 @@ class GithubJsonManifest:
             asset = GithubAsset(asset)
         filepath = destination or self._asset_destination(asset.name)
         if cache and self.tftp.file_exists(filepath):
-            await self.tftp.exec([uboot_msg(f"Using cached asset: {filepath}", bold=True)])
+            self.tftp.exec_queue([uboot_msg(f"Using cached asset: {filepath}", bold=True)])
             return self.tftp.read_file(filepath)
         await uboot_download_url(
             self.tftp,
@@ -120,6 +120,7 @@ class GithubJsonManifest:
 
     async def load(self) -> dict[str, Any]:
         if self._manifest is not None:
+            self.tftp.exec_queue([uboot_msg(f"Using cached manifest: {self.destination}", bold=True)])
             return self._manifest
 
         payload = await uboot_download_url(

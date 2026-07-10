@@ -18,16 +18,17 @@ class FakeHandle:
         self.exec_calls = []
         self.exec_recv_calls = []
 
-    async def exec(self, script, *, final=False, keys=()):
+    async def exec(self, script, *, final=False, keys=(), requires=()):
         self.exec_calls.append(
             {
                 "script": list(script),
                 "final": final,
                 "keys": list(keys),
+                "requires": list(requires),
             }
         )
 
-    async def exec_recv(self, script, size, *, final=False, keys=(), offset=None):
+    async def exec_recv(self, script, size, *, final=False, keys=(), offset=None, requires=()):
         self.exec_recv_calls.append(
             {
                 "script": list(script),
@@ -35,6 +36,7 @@ class FakeHandle:
                 "final": final,
                 "keys": list(keys),
                 "offset": offset,
+                "requires": list(requires),
             }
         )
         return b"payload"
@@ -136,6 +138,7 @@ def test_uboot_exec_delay_runs_commands_immediately_for_zero_seconds():
             "script": ["boot"],
             "final": True,
             "keys": [],
+            "requires": [],
         }
     ]
 

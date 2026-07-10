@@ -303,3 +303,56 @@ def test_openipc_load_release_assets_can_extract_kernel_and_rootfs_from_tgz(monk
     assert release.rootfs_payload == b"rootfs-image"
     assert release.kernel_asset["name"] == "uImage.gk7205v300"
     assert release.rootfs_asset["name"] == "rootfs.squashfs"
+
+
+def test_openipc_build_partition_payloads_prefers_extracted_member_names_for_sources():
+    module = load_openipc_module()
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={
+            "ethaddr": "00:11:22:33:44:55",
+            "serverip": "192.168.1.1",
+            "soc": "gk7205v300",
+            "fw": "lite",
+        },
+        nor_size=8 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
+        cache=True,
+        tag="latest",
+    )
+    release = module.OpenIpcReleaseAssets(
+        manifest=SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest"),
+        release_env={
+            "bootcmd": "run boot",
+            "mtdparts": "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+        },
+        partition_table=parse_mtdparts_spec(
+            "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+            total_size=8 * 2**20,
+        ),
+        uboot_asset={"browser_download_url": "https://example.com/u-boot.bin"},
+        uboot_payload=b"uboot",
+        kernel_asset={
+            "name": "uImage.gk7205v300",
+            "browser_download_url": "https://example.com/openipc.gk7205v300-nor-lite.tgz",
+        },
+        kernel_payload=b"kernel",
+        rootfs_asset={
+            "name": "rootfs.squashfs",
+            "browser_download_url": "https://example.com/openipc.gk7205v300-nor-lite.tgz",
+        },
+        rootfs_payload=b"rootfs",
+    )
+
+    class FakeTftp:
+        rambase = "loadaddr"
+        is_le = True
+
+    payloads = module.openipc_build_partition_payloads(FakeTftp(), context, release)
+
+    kernel_payload = next(payload for payload in payloads if payload.name == "kernel")
+    rootfs_payload = next(payload for payload in payloads if payload.name == "rootfs")
+    assert kernel_payload.source == "uImage.gk7205v300"
+    assert rootfs_payload.source == "rootfs.squashfs"

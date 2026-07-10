@@ -121,12 +121,23 @@ class SessionHandle:
         keys: Iterable[str] = (),
         requires: Iterable[str] = (),
     ) -> bool:
+        required_cmds = _normalize_required_cmds(
+            (*self.session.queued_required_cmds, *tuple(requires))
+        )
+        body = _join_script_lines(
+            (
+                *self.session.queued_scripts,
+                _join_script_lines(script),
+            )
+        )
+        self.session.queued_scripts.clear()
+        self.session.queued_required_cmds.clear()
         return await _ExecutionAwaitable(
             _ExecutionRequest(
-                script=_join_script_lines(script),
+                script=body,
                 final=final,
                 return_keys=_normalize_return_keys(keys),
-                required_cmds=_normalize_required_cmds(requires),
+                required_cmds=required_cmds,
             )
         )
 
@@ -142,19 +153,34 @@ class SessionHandle:
     ) -> bytes:
         if final:
             raise ValueError("exec_recv(..., final=True) is not supported")
+        required_cmds = _normalize_required_cmds(
+            (*self.session.queued_required_cmds, *tuple(requires))
+        )
+        body = _join_script_lines(
+            (
+                *self.session.queued_scripts,
+                _join_script_lines(script),
+            )
+        )
+        self.session.queued_scripts.clear()
+        self.session.queued_required_cmds.clear()
         result = await _ExecutionAwaitable(
             _ExecutionRequest(
-                script=_join_script_lines(script),
+                script=body,
                 final=False,
                 receive_size=size,
                 return_keys=_normalize_return_keys(keys),
                 receive_offset=offset,
-                required_cmds=_normalize_required_cmds(requires),
+                required_cmds=required_cmds,
             )
         )
         if result is None:
             raise ReceiveFailedError("expected WRQ upload before continuation RRQ")
         return result
+
+    def exec_queue(self, script: Iterable[str], *, requires: Iterable[str] = ()) -> None:
+        self.session.queued_scripts.extend(line for line in script if line)
+        self.session.queued_required_cmds.extend(_normalize_required_cmds(requires))
 
     def write_file(self, destination: str | Path, body: bytes) -> Path:
         target = _resolve_static_path(self.provider.static_root, "/" + str(destination))
@@ -331,6 +357,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
                     self.compiler.compile(_ensure_newline(_hush_failure_script()))
                 )
             session.is_le = session.env.get("_1") == "44"
+            session.queued_scripts.append(uboot_msg("OK"))
             session.handler = self._create_handler(session, request)
         if session.handler is None:
             raise FileNotFoundError(f"session has no active handler: {parsed.client_id!r}")
@@ -635,7 +662,7 @@ def _preflight_probe_script(rambase_var: str) -> str:
     return _join_script_lines(
         (
             uboot_term_reset(),
-            uboot_msg("Executing preflight... ", bold=True),
+            uboot_msg("Executing preflight... ", nl=False, bold=True),
             "if true; then setenv hush_shell true; fi",
             f"setexpr.l tmp *{rambase}",
             f"mw.l {rambase} 0x11223344 1",

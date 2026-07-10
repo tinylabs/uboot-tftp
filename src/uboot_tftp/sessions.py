@@ -42,6 +42,8 @@ class ClientSession:
     unsupported_cmds: set[str] = field(default_factory=set)
     pending_command_probes: dict[str, str] = field(default_factory=dict)
     pending_exec_status_key: str | None = None
+    queued_scripts: list[str] = field(default_factory=list)
+    queued_required_cmds: list[str] = field(default_factory=list)
 
     def record_rrq(self, parsed: ParsedPath) -> None:
         self.updated_at = time.time()

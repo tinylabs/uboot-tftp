@@ -488,10 +488,13 @@ def _require_partition(table: PartitionTable, *names: str) -> PartitionEntry:
 
 
 def _source_name(asset: GithubAsset) -> str:
+    name = str(asset.get("name", "")).strip()
+    if name:
+        return name
     url = str(asset.get("browser_download_url", "")).strip()
     if url:
         return _parse_url_filename(url)
-    return str(asset.get("name", "")).strip()
+    return ""
 
 
 def openipc_build_partition_payloads(
