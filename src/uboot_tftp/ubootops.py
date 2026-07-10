@@ -80,13 +80,14 @@ async def uboot_nor_download(
 ) -> bytes:
     """Read a NOR flash range into RAM and upload it back to the TFTP server."""
 
+    requires=[]
     script = [
         *_normalize_cmds(pre_cmds),
-        uboot_memset(tftp, offset=0, size=size, value=0xFF),
-        uboot_nor_read(tftp, ram_offset=0, nor_offset=0, size=size),
+        uboot_memset(tftp, offset=0, size=size, value=0xFF, requires=requires),
+        uboot_nor_read(tftp, ram_offset=0, nor_offset=0, size=size, requires=requires),
         *_normalize_cmds(post_cmds),
     ]
-    return await tftp.exec_recv(script=script, size=size)
+    return await tftp.exec_recv(script=script, size=size, requires=requires)
 
 
 async def uboot_nor_probe(
@@ -101,6 +102,7 @@ async def uboot_nor_probe(
 ) -> int:
     """Probe NOR flash and return the detected size in bytes."""
 
+    requires=['sf probe', 'setenv']
     parsed_max_size = _parse_max_size(max_size)
     await tftp.exec(
         [
@@ -109,15 +111,16 @@ async def uboot_nor_probe(
             f"setenv {status_key} $?",
         ],
         keys=[status_key],
-    )
+        requires=requires)
     if tftp.env[status_key] == "1":
         return 0
     await tftp.exec(
         [
-            *uboot_nor_gen_probe(tftp, 2**20, parsed_max_size),
+            *uboot_nor_gen_probe(tftp, 2**20, parsed_max_size, requires=requires),
             *_normalize_cmds(post_cmds),
         ],
         keys=[size_key],
+        requires=requires,
         final=final,
     )
     return int(tftp.env[size_key], 0)
@@ -190,6 +193,7 @@ async def uboot_crc32(
     scratch_addr = scratch if scratch is not None else tftp.rambase
     keys = [f"{key_prefix}{index}" for index in range(len(batch))]
     script = [*_normalize_cmds(pre_cmds)]
+    requires = []
     for index, (addr, length) in enumerate(batch):
         script.extend(
             uboot_crc32_gen(
@@ -197,10 +201,11 @@ async def uboot_crc32(
                 length,
                 scratch=scratch_addr,
                 result=keys[index],
+                requires=requires,
             )
         )
     script.extend(_normalize_cmds(post_cmds))
-    await tftp.exec(script, keys=keys, final=final)
+    await tftp.exec(script, keys=keys, requires=requires, final=final)
 
     values: list[int] = []
     for key in keys:

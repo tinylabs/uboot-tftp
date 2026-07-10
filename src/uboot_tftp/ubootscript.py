@@ -17,12 +17,14 @@ def uboot_memset(
     value: int | str,
     size: int | str,
     *,
+    requires: list | None = None,
     base: str | None = None,
 ) -> str:
     """Return a U-Boot snippet that fills memory relative to a base address."""
 
     addr_var = _next_tmp("addr")
     base_expr = _normalize_base(tftp, base)
+    requires += ['setexpr', 'mw.b', 'setenv'] if requires else []
     return "\n".join(
         (
             f"setexpr {addr_var} {base_expr} + {_format_number(offset)}",
@@ -37,10 +39,13 @@ def uboot_memcpy(
     src_offset: int | str,
     size: int | str,
     *,
+    requires: list | None = None,
     base: str | None = None,
 ) -> str:
     """Return a U-Boot snippet that copies memory relative to a base address."""
 
+    requires = requires or []
+    requires += ['setexpr', 'cp.b', 'setenv']
     src_var = _next_tmp("src")
     dst_var = _next_tmp("dst")
     base_expr = _normalize_base(tftp, base)
@@ -55,9 +60,15 @@ def uboot_memcpy(
     )
 
 
-def uboot_nor_erase(offset: int | str, size: int | str) -> str:
+def uboot_nor_erase(offset: int | str,
+                    size: int | str,
+                    *,
+                    requires: list | None = None,
+                    ) -> str:
     """Return a U-Boot snippet that erases a NOR flash range."""
 
+    requires = requires or []
+    requires += ['sf probe', 'sf erase']
     return "\n".join(
         (
             "sf probe 0",
@@ -72,10 +83,13 @@ def uboot_nor_read(
     nor_offset: int | str,
     size: int | str,
     *,
+    requires: list | None = None,
     base: str | None = None,
 ) -> str:
     """Return a U-Boot snippet that reads NOR flash into RAM."""
 
+    requires = requires or []
+    requires += ['sf probe', 'setexpr', 'sf read', 'setenv']
     addr_var = _next_tmp("addr")
     base_expr = _normalize_base(tftp, base)
     return "\n".join(
@@ -94,10 +108,13 @@ def uboot_nor_write(
     ram_offset: int | str,
     size: int | str,
     *,
+    requires: list | None = None,
     base: str | None = None,
 ) -> str:
     """Return a U-Boot snippet that writes RAM into NOR flash."""
 
+    requires = requires or []
+    requires += ['sf probe', 'setexpr', 'sf write', 'setenv']
     addr_var = _next_tmp("addr")
     base_expr = _normalize_base(tftp, base)
     return "\n".join(
@@ -114,20 +131,23 @@ def uboot_fetch_static(
     tftp: Any,
     filename: str,
     *,
+    requires: list | None = None,
     offset: int | str | None = None,
     base: str | None = None,
 ) -> str:
     """Return a U-Boot snippet that downloads a static file into RAM."""
 
+    requires = requires or []
+    requires += ['setexpr', 'cmdtftp', 'setenv']
     addr_var = _next_tmp("addr")
     base_expr = _normalize_base(tftp, base)
     remote_path = str(filename).lstrip("/")
     if offset is None:
-        return f'tftpboot {tftp.rambase} "{tftp.server_ip}:{remote_path}"'
+        return f'{tftp.cmdtftp} {tftp.rambase} "{tftp.server_ip}:{remote_path}"'
     return "\n".join(
         (
             f"setexpr {addr_var} {base_expr} + {_format_number(offset)}",
-            f'tftpboot ${{{addr_var}}} "{tftp.server_ip}:{remote_path}"',
+            f'{tftp.cmdtftp} ${{{addr_var}}} "{tftp.server_ip}:{remote_path}"',
             f"setenv {addr_var}",
         )
     )
@@ -138,6 +158,7 @@ def uboot_nor_gen_probe(
     max_sz: int,
     script: list[str] | None = None,
     *,
+    requires: list | None = None,
     known_good: int = 0,
     offset: int = 0,
     base: str | None = None,
@@ -147,6 +168,8 @@ def uboot_nor_gen_probe(
     base_expr = _normalize_base(tftp, base)
     if script is None:
         script = []
+        requires = requires or []
+        requires += ['sf read', 'if', 'test']
     if sz > max_sz:
         script.append(f"size={known_good:#x};\n")
         return script
@@ -156,7 +179,7 @@ def uboot_nor_gen_probe(
     script.append(f"size={known_good:#x};\n")
     script.append("else\n")
     uboot_nor_gen_probe(tftp, sz * 2, max_sz, script,
-                        known_good=sz, offset=offset, base=base)
+                        known_good=sz, offset=offset, base=base, requires=requires)
     script.append("fi;\n")
     return script
 
@@ -165,11 +188,14 @@ def uboot_crc32_gen(
     addr: int | str,
     length: int | str,
     *,
+    requires: list | None = None,
     scratch: int | str,
     result: str,
 ) -> list[str]:
     """Return a U-Boot snippet that computes CRC32 and stores the raw digest word."""
 
+    requires = requires or []
+    requires += ['setexpr', 'crc32', 'mw.l', 'setenv']
     dest_var = _next_tmp("crc_dest")
     saved_var = _next_tmp("crc_saved")
     return [

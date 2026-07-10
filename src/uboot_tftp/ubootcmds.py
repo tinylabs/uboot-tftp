@@ -57,12 +57,12 @@ _REGISTRY: dict[str, CommandSpec] = {
     # FIXME
     "sf write": CommandSpec(
         policy="probe",
-        probe_lines=("sf write {rambase} 0x0 0x0",),
+        probe_lines=("sf probe 0",),
     ),
     # FIXME
     "sf erase": CommandSpec(
         policy="probe",
-        probe_lines=("sf erase 0x0 0x0",),
+        probe_lines=("sf probe 0",),
     ),
     "setexpr": CommandSpec(
         policy="probe",
@@ -93,8 +93,8 @@ _REGISTRY: dict[str, CommandSpec] = {
         probe_lines=("mw.b {rambase} 0x0 0x0",),
     ),
     "setenv": CommandSpec(
-        policy="probe",
-        probe_lines=("setenv __uboot_tftp_probe",),
+        policy="assumed",
+        assumption="framework_setenv",
     ),
     "tftpboot": CommandSpec(
         policy="probe",
