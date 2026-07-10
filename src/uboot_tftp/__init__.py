@@ -49,6 +49,7 @@ from .ubootscript import (
     uboot_nor_write,
     uboot_nor_gen_probe,
 )
+from .ubootcmds import framework_required_commands, normalize_requested_commands, build_probe_batch
 from .uploads import InMemoryUploadStore, UploadedFile, UploadRequest
 
 __all__ = [
@@ -99,9 +100,12 @@ __all__ = [
     "UploadedFile",
     "UploadRequest",
     "build_partition_update_plan",
+    "build_probe_batch",
     "collect_partition_digests",
     "extract_script_payload",
+    "framework_required_commands",
     "load_daemon_config",
+    "normalize_requested_commands",
     "parse_request_path",
     "partition_payload_crc32",
     "extract_mtdparts_spec",

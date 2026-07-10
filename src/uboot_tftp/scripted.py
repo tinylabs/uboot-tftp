@@ -17,6 +17,12 @@ from .mkimage import LegacyScriptImageCompiler
 from .protocol import ParsedPath, parse_request_path
 from .providers import ContentRequest, ContentResult, DynamicContentProvider
 from .sessions import ClientSession, InMemorySessionStore, PendingReceive
+from .ubootcmds import (
+    build_probe_batch,
+    framework_required_commands,
+    get_command_spec,
+    normalize_requested_commands,
+)
 from .ubootterm import uboot_err, uboot_msg, uboot_term_reset
 from .ubootenv import ubootenv_parse_export
 from .uploads import InMemoryUploadStore
@@ -219,6 +225,41 @@ class SessionHandle:
             raise ValueError(f"invalid {size_key!r} value: {size_text!r}") from error
         data = await self.exec_recv(upload_script, size)
         return ubootenv_parse_export(data)
+
+    async def check_cmds(self, cmd_list: list[str]) -> list[str]:
+        combined = [*cmd_list, *framework_required_commands()]
+        commands = normalize_requested_commands(combined, self.session.env)
+        session_proven = set(normalize_requested_commands(["cmdtftp"], self.session.env))
+
+        probe_list: list[str] = []
+        for command in commands:
+            if command in session_proven:
+                self.session.unsupported_cmds.discard(command)
+                self.session.supported_cmds.add(command)
+                continue
+            if command in self.session.supported_cmds:
+                continue
+            if command in self.session.unsupported_cmds:
+                continue
+            spec = get_command_spec(command)
+            if spec.policy == "assumed":
+                self.session.supported_cmds.add(command)
+                continue
+            if spec.policy == "probe":
+                probe_list.append(command)
+                continue
+            raise ValueError(f"unexpected command policy for {command!r}: {spec.policy}")
+
+        if probe_list:
+            script, keys, key_map = build_probe_batch(probe_list, self.session.env)
+            await self.exec(script, keys=keys)
+            for command in probe_list:
+                if self.session.env.get(key_map[command]) == "0":
+                    self.session.supported_cmds.add(command)
+                else:
+                    self.session.unsupported_cmds.add(command)
+
+        return [command for command in commands if command in self.session.supported_cmds]
 
 class ScriptedSessionProvider(DynamicContentProvider):
     """Serve static files or dispatch session RRQs to user handlers."""

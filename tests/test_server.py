@@ -78,6 +78,30 @@ def test_dynamic_content_server_logs_rrq_summary(tmp_path, caplog):
     )
 
 
+def test_dynamic_content_server_serves_null_rrq_without_calling_provider(tmp_path):
+    def fetch(request):  # noqa: ARG001
+        raise AssertionError("provider should not be called for _null")
+
+    server = DynamicContentServer(
+        address="127.0.0.1",
+        port=6969,
+        retries=3,
+        timeout=5,
+        provider=CallableContentProvider(fetch),
+        upload_store=InMemoryUploadStore(InMemorySessionStore()),
+        tftproot=tmp_path,
+        server_factory=FakeTftpServer,
+    )
+
+    fileobj = server._open_dynamic_download(
+        "_null",
+        raddress="127.0.0.1",
+        rport=12345,
+    )
+
+    assert fileobj.read() == b""
+
+
 def test_dynamic_content_server_opens_expected_session_upload_sink(tmp_path):
     sessions = InMemorySessionStore()
     session = sessions.create("cam123")
@@ -165,6 +189,32 @@ def test_dynamic_content_server_writes_static_uploads_to_disk(tmp_path):
     upload.close()
 
     assert (tmp_path / "plain.txt").read_bytes() == b"payload"
+    assert upload_store.all() == []
+
+
+def test_dynamic_content_server_discards_null_static_uploads(tmp_path):
+    upload_store = InMemoryUploadStore(InMemorySessionStore())
+    server = DynamicContentServer(
+        address="127.0.0.1",
+        port=6969,
+        retries=3,
+        timeout=5,
+        provider=CallableContentProvider(lambda request: ContentResult.from_bytes(b"")),
+        upload_store=upload_store,
+        tftproot=tmp_path,
+        server_factory=FakeTftpServer,
+    )
+
+    class Context:
+        host = "127.0.0.1"
+        port = 12345
+        flock = True
+
+    upload = server._open_upload(str(tmp_path / "_null"), Context())
+    upload.write(b"payload")
+    upload.close()
+
+    assert not (tmp_path / "_null").exists()
     assert upload_store.all() == []
 
 

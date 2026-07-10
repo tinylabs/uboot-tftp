@@ -720,6 +720,12 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             ]
             await tftp.exec(cmds, final=True)
 
+        case 'cmd_check':
+            #cmds = ['sf probe', 'sf erase', 'crc32', 'cp', 'setexpr', 'tftpput', 'tftpboot']
+            cmds = ['cmdtftp', 'cmdtftpput']
+            supported = await tftp.check_cmds (cmds)
+            await tftp.exec([uboot_msg(f'supported={supported}')], final=True)
+            
         # Unrecognized cmd
         case _:
             await uboot_nomatch(tftp, ident, cmd,

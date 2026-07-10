@@ -38,6 +38,8 @@ class ClientSession:
     is_le: bool | None = None
     preflight_pending: bool = False
     download_artifacts: set[str] = field(default_factory=set)
+    supported_cmds: set[str] = field(default_factory=set)
+    unsupported_cmds: set[str] = field(default_factory=set)
 
     def record_rrq(self, parsed: ParsedPath) -> None:
         self.updated_at = time.time()

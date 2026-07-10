@@ -518,7 +518,9 @@ def test_file_exists_checks_relative_path_under_tftp_root(tmp_path):
         ),
     )
     sessions = InMemorySessionStore()
-    provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=InMemoryUploadStore(sessions))
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
 
     script = start_session_script(provider, "id=cam123/bootstrap")
 
@@ -826,3 +828,222 @@ def test_session_cleanup_releases_attached_download_artifacts(tmp_path):
     assert artifact is not None
     assert artifact.ref_count == 0
     release.set()
+
+
+def test_check_cmds_returns_assumed_commands_without_issuing_probe(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    supported = await tftp.check_cmds(['source'])",
+                "    await tftp.exec([f'echo supported {\"|\".join(supported)}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = start_session_script(provider, "id=cam123/bootstrap")
+
+    assert "/_0=" not in script
+    assert "echo supported source|true|if|echo|tftpboot" in script
+
+
+def test_check_cmds_resolves_transport_aliases_via_session_config(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    supported = await tftp.check_cmds(['cmdtftp', 'cmdtftpput'])",
+                "    await tftp.exec([f'echo supported {\"|\".join(supported)}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    config.env["cmdtftp"] = "dhcp"
+    config.env["cmdtftpput"] = "tftpput"
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "cmdtftp" not in first
+    assert "cmdtftpput" not in first
+    assert "dhcp" in first
+    assert "tftpput" in first
+
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={token}/_0=0/_1=0"))
+    )
+    assert "echo supported dhcp|tftpput|source|true|if|echo" in second
+
+
+def test_check_cmds_appends_framework_required_commands(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    supported = await tftp.check_cmds([])",
+                "    await tftp.exec([f'echo supported {\"|\".join(supported)}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = start_session_script(provider, "id=cam123/bootstrap")
+    assert "echo supported source|true|if|echo|tftpboot" in script
+
+
+def test_check_cmds_only_probes_uncached_commands_within_session(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    first = await tftp.check_cmds(['env export'])",
+                "    second = await tftp.check_cmds(['env export', 'sf probe'])",
+                "    await tftp.exec([",
+                "        f'echo first {\"|\".join(first)}',",
+                "        f'echo second {\"|\".join(second)}',",
+                "    ], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    first_token_match = TOKEN_RE.search(first)
+    assert first_token_match is not None
+    first_token = first_token_match.group(1)
+    assert "env export -t ${loadaddr}" in first
+    assert "sf probe 0" not in first
+
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={first_token}/_0=0"))
+    )
+    second_token_match = TOKEN_RE.search(second)
+    assert second_token_match is not None
+    second_token = second_token_match.group(1)
+    assert "env export -t ${loadaddr}" not in second
+    assert "sf probe 0" in second
+
+    third = script_from_result(
+        provider.fetch(request(f"id=cam123/token={second_token}/_0=0"))
+    )
+    assert "echo first env export|source|true|if|echo|tftpboot" in third
+    assert "echo second env export|sf probe|source|true|if|echo|tftpboot" in third
+
+
+def test_check_cmds_keeps_unsupported_probed_commands_omitted_on_later_calls(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    first = await tftp.check_cmds(['sf write'])",
+                "    second = await tftp.check_cmds(['sf write'])",
+                "    await tftp.exec([",
+                "        f'echo first {\"|\".join(first)}',",
+                "        f'echo second {\"|\".join(second)}',",
+                "    ], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "sf write ${loadaddr} 0x0 0x0" in first
+
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={token}/_0=1"))
+    )
+    assert "sf write ${loadaddr} 0x0 0x0" not in second
+    assert "echo first source|true|if|echo|tftpboot" in second
+    assert "echo second source|true|if|echo|tftpboot" in second
+
+
+def test_check_cmds_uses_configured_rambase_variable_for_probes(tmp_path):
+    script = tmp_path / "script.py"
+    script.write_text(
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    supported = await tftp.check_cmds(['sf read'])",
+                "    await tftp.exec([f'echo supported {\"|\".join(supported)}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        )
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "[server]",
+                'scriptfile = "script.py"',
+                f'rootdir = "{(tmp_path / "static").resolve()}"',
+                "",
+                "[env]",
+                'rambase = "baseaddr"',
+                'cmdtftp = "tftpboot"',
+                'cmdtftpput = "tftpput"',
+                "",
+                "[cam123]",
+                'entry_func = "handler"',
+                "",
+                "[default]",
+                'entry_func = "default"',
+            )
+        )
+    )
+    config = load_daemon_config(config_path)
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    client_id, _, token = preflight_session(provider, "id=cam123/bootstrap/baseaddr=0x42000000")
+    script_text = script_from_result(
+        provider.fetch(
+            request(f"id={client_id}/token={token}/hush_shell=true/_1=44/baseaddr=0x42000000")
+        )
+    )
+
+    assert "sf read ${baseaddr} 0x0 0x0" in script_text
+    assert "${loadaddr}" not in script_text

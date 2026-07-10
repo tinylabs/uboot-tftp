@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import tempfile
@@ -214,6 +215,16 @@ class DynamicContentServer:
             server_addr=(self.address, self.port),
             options={},
         )
+        if _is_null_filename(filename):
+            result = ContentResult.from_bytes(b"")
+            fileobj = fileobj_from_result(result)
+            return _TransferLogFile(
+                fileobj,
+                action="RRQ",
+                filename=filename,
+                peer=(raddress, rport),
+                expected_size=result.size,
+            )
         try:
             result = self.provider.fetch(request)
         except FileNotFoundError:
@@ -246,6 +257,13 @@ class DynamicContentServer:
             filename,
             _format_peer((context.host, context.port)),
         )
+        if _is_null_filename(filename):
+            return _TransferLogFile(
+                io.BytesIO(),
+                action="WRQ",
+                filename=filename,
+                peer=(context.host, context.port),
+            )
         if parsed.is_session:
             return _TransferLogFile(
                 self.upload_store.open(request),
@@ -304,3 +322,7 @@ def _payload_length(payload: object) -> int:
         return len(payload)
     except TypeError:
         return 0
+
+
+def _is_null_filename(filename: str) -> bool:
+    return filename.strip("/") == "_null"
