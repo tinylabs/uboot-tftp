@@ -23,6 +23,15 @@ def test_cli_accepts_only_config_path():
 
     assert args.config == "config.toml"
     assert args.rootdir is None
+    assert args.log_dir is None
+
+
+def test_cli_accepts_log_dir():
+    args = build_parser().parse_args(
+        ["--config", "config.toml", "--log-dir", "/tmp/uboot-logs"]
+    )
+
+    assert args.log_dir == "/tmp/uboot-logs"
 
 
 def test_build_server_uses_server_config(tmp_path):
@@ -118,10 +127,14 @@ def test_build_runtime_returns_fresh_provider_and_upload_store(tmp_path):
         )
     )
 
-    provider, uploads = build_runtime(load_daemon_config(config_path))
+    provider, uploads = build_runtime(
+        load_daemon_config(config_path),
+        log_dir=(tmp_path / "logs").resolve(),
+    )
 
     assert provider.static_root == (tmp_path / "root").resolve()
     assert provider.upload_store is uploads
+    assert provider.session_log_dir == (tmp_path / "logs").resolve()
 
 
 def test_pidfile_path_defaults_to_config_basename(tmp_path):

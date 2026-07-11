@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
+import re
 import secrets
 import socket
 from collections.abc import Iterable
@@ -308,6 +310,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
         upload_store: InMemoryUploadStore | None = None,
         compiler: LegacyScriptImageCompiler | None = None,
         download_jobs: DownloadJobStore | None = None,
+        session_log_dir: str | Path | None = None,
     ) -> None:
         self.config = config
         self.sessions = sessions or InMemorySessionStore()
@@ -316,6 +319,11 @@ class ScriptedSessionProvider(DynamicContentProvider):
         self._module = _load_script_module(config.script_path)
         self.static_root = config.static_root
         self.static_root.mkdir(parents=True, exist_ok=True)
+        self.session_log_dir = (
+            Path(session_log_dir).resolve() if session_log_dir is not None else None
+        )
+        if self.session_log_dir is not None:
+            self.session_log_dir.mkdir(parents=True, exist_ok=True)
         self.download_jobs = download_jobs or DownloadJobStore(
             temp_root=self.static_root / ".downloads"
         )
@@ -339,7 +347,8 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session.env = _session_env(self.config.env, route.env, parsed)
         session.public_env = _public_env(session.env)
         session.preflight_pending = True
-        return self._preflight_result(session)
+        self._start_session_log(session)
+        return self._preflight_result(session, request)
 
     def _resume_session(self, request: ContentRequest, parsed: ParsedPath) -> ContentResult:
         session = self.sessions.require(parsed.client_id)
@@ -353,9 +362,9 @@ class ScriptedSessionProvider(DynamicContentProvider):
             if session.env.get("hush_shell") != "true":
                 session.phase = "complete"
                 self._discard_session(session)
-                return ContentResult.from_bytes(
-                    self.compiler.compile(_ensure_newline(_hush_failure_script()))
-                )
+                script = _ensure_newline(_hush_failure_script())
+                self._log_session_script(session, request, script)
+                return ContentResult.from_bytes(self.compiler.compile(script))
             session.is_le = session.env.get("_1") == "44"
             session.queued_scripts.append(uboot_msg("OK"))
             session.handler = self._create_handler(session, request)
@@ -368,12 +377,13 @@ class ScriptedSessionProvider(DynamicContentProvider):
             else:
                 send_value = None
             session.pending_receive = None
-            return self._advance_session(session, send_value)
-        return self._advance_session(session, _consume_exec_status(session))
+            return self._advance_session(session, request, send_value)
+        return self._advance_session(session, request, _consume_exec_status(session))
 
     def _advance_session(
         self,
         session: ClientSession,
+        request: ContentRequest,
         send_value: object,
     ) -> ContentResult:
         try:
@@ -389,7 +399,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
             session.phase = "complete"
             self._discard_session(session)
             raise FileNotFoundError(str(error)) from error
-        return self._result_from_instruction(session, instruction)
+        return self._result_from_instruction(session, request, instruction)
 
     def _create_handler(
         self,
@@ -417,7 +427,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
             raise TypeError("session handlers must be async functions")
         return handler
 
-    def _preflight_result(self, session: ClientSession) -> ContentResult:
+    def _preflight_result(self, session: ClientSession, request: ContentRequest) -> ContentResult:
         session.current_token = _new_token()
         session.phase = "await_rrq"
         script = self._append_continue(
@@ -426,11 +436,13 @@ class ScriptedSessionProvider(DynamicContentProvider):
             recv_status=None,
             return_keys=("hush_shell", "_1", session.env["rambase"]),
         )
+        self._log_session_script(session, request, _ensure_newline(script))
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
 
     def _result_from_instruction(
         self,
         session: ClientSession,
+        request: ContentRequest,
         instruction: _ExecutionRequest,
     ) -> ContentResult:
         if not isinstance(instruction, _ExecutionRequest):
@@ -489,6 +501,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
                 recv_status=None,
                 return_keys=return_keys,
             )
+        self._log_session_script(session, request, _ensure_newline(script))
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
 
     def _append_continue(
@@ -619,6 +632,25 @@ class ScriptedSessionProvider(DynamicContentProvider):
             )
             session.download_artifacts.discard(artifact_key)
         self.sessions.discard(session.client_id)
+
+    def _start_session_log(self, session: ClientSession) -> None:
+        if self.session_log_dir is None:
+            session.log_path = None
+            return
+        session.log_path = self.session_log_dir / f"{session.client_id}.log"
+        session.log_path.write_text("", encoding="utf-8")
+
+    def _log_session_script(
+        self,
+        session: ClientSession,
+        request: ContentRequest,
+        script: str,
+    ) -> None:
+        if session.log_path is None:
+            return
+        payload = _format_session_log_entry(request, script)
+        with session.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(payload)
 
     def _static_result(self, path: str) -> ContentResult:
         file_path = _resolve_static_path(self.static_root, path)
@@ -919,6 +951,93 @@ def _new_token() -> str:
 
 def _new_tmp_name(kind: str) -> str:
     return f"__uboot_tftp_{kind}_{secrets.token_hex(4)}"
+
+
+def _format_session_log_entry(request: ContentRequest, script: str) -> str:
+    request_lines = [
+        "REQUEST",
+        f"filename: {request.filename}",
+        f"peer: {request.peer}",
+        f"server_addr: {request.server_addr}",
+        f"options: {json.dumps(dict(request.options), sort_keys=True)}",
+        "SCRIPT",
+        _sanitize_logged_script(script),
+        "",
+    ]
+    return "\n".join(request_lines) + "\n"
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|.)")
+_CLEAR_SEQUENCE_RE = re.compile(r"(?:\x1b8)?(?:\x1b\[2J|\x1b\[J)(?:\x1b\[0m)?(?:\x1b\[H)?(?:\x1b7)?")
+_ECHO_SEGMENT_RE = re.compile(r'^echo "((?:[^"\\]|\\.)*)"$')
+
+
+def _sanitize_logged_script(script: str) -> str:
+    lines: list[str] = []
+    for line in script.rstrip("\n").splitlines():
+        cleaned = _sanitize_logged_line(line)
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)
+
+
+def _sanitize_logged_line(line: str) -> str:
+    segments = [segment.strip() for segment in _split_shell_segments(line)]
+    cleaned_segments: list[str] = []
+    for segment in segments:
+        if not segment:
+            continue
+        cleaned_segment = _sanitize_echo_segment(segment)
+        if cleaned_segment:
+            cleaned_segments.append(cleaned_segment)
+    return "; ".join(cleaned_segments)
+
+
+def _sanitize_echo_segment(segment: str) -> str:
+    echo_match = _ECHO_SEGMENT_RE.fullmatch(segment)
+    if echo_match is not None:
+        message = _sanitize_echo_payload(echo_match.group(1))
+        return f'echo "{message}"' if message else ""
+    if not segment.startswith("echo "):
+        return segment
+    message = _sanitize_echo_payload(segment[5:])
+    return f'echo "{message}"' if message else ""
+
+
+def _sanitize_echo_payload(payload: str) -> str:
+    message = payload.replace('\\"', '"').replace("\\c", "")
+    message = _CLEAR_SEQUENCE_RE.sub("<clear>", message)
+    message = _ANSI_ESCAPE_RE.sub("", message)
+    message = "".join(character for character in message if character.isprintable())
+    message = re.sub(r"(?:<clear>)+", "<clear>", message)
+    return message.strip()
+
+
+def _split_shell_segments(line: str) -> list[str]:
+    segments: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    escaped = False
+    for character in line:
+        if escaped:
+            current.append(character)
+            escaped = False
+            continue
+        if character == "\\":
+            current.append(character)
+            escaped = True
+            continue
+        if character == '"':
+            current.append(character)
+            in_quotes = not in_quotes
+            continue
+        if character == ";" and not in_quotes:
+            segments.append("".join(current))
+            current = []
+            continue
+        current.append(character)
+    segments.append("".join(current))
+    return segments
 
 
 class _ExecutionAwaitable:

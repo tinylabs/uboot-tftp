@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Literal
 
 from .protocol import ParsedPath, normalize_client_id
@@ -44,6 +45,7 @@ class ClientSession:
     pending_exec_status_key: str | None = None
     queued_scripts: list[str] = field(default_factory=list)
     queued_required_cmds: list[str] = field(default_factory=list)
+    log_path: Path | None = None
 
     def record_rrq(self, parsed: ParsedPath) -> None:
         self.updated_at = time.time()

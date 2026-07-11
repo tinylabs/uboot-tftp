@@ -1458,3 +1458,77 @@ def test_exec_recv_requires_uses_failure_continuation_for_missing_command(tmp_pa
     second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/recv=failed/_c0=1")))
     assert "echo fallback" in second
     assert "echo unexpected" not in second
+
+
+def test_session_logging_writes_request_and_script_blocks(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo step1'])",
+                "    await tftp.exec(['echo step2'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    log_dir = tmp_path / "logs"
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config,
+        sessions=sessions,
+        upload_store=InMemoryUploadStore(sessions),
+        session_log_dir=log_dir,
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+
+    log_path = log_dir / "cam123.log"
+    payload = log_path.read_text()
+    assert payload.count("REQUEST\n") == 3
+    assert "filename: id=cam123/bootstrap" in payload
+    assert "filename: id=cam123/token=" in payload
+    assert 'echo "<clear>OK"' in payload
+    assert 'echo "<clear>Executing preflight..."' in payload
+    assert 'echo "step1"' in payload
+    assert 'SCRIPT\necho "step2"' in payload
+    assert "\x1b" not in payload
+
+
+def test_session_logging_overwrites_existing_ident_log_on_new_session(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo session'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    log_dir = tmp_path / "logs"
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config,
+        sessions=sessions,
+        upload_store=InMemoryUploadStore(sessions),
+        session_log_dir=log_dir,
+    )
+
+    start_session_script(provider, "id=cam123/first")
+    log_path = log_dir / "cam123.log"
+    initial = log_path.read_text()
+    assert "filename: id=cam123/first" in initial
+
+    start_session_script(provider, "id=cam123/second")
+    overwritten = log_path.read_text()
+    assert "filename: id=cam123/second" in overwritten
+    assert "filename: id=cam123/first" not in overwritten

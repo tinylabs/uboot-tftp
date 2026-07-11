@@ -29,11 +29,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--rootdir",
         help="Absolute path to override [server].rootdir from the config file.",
     )
+    parser.add_argument(
+        "--log-dir",
+        help="Directory for per-session request/script logs.",
+    )
     return parser
 
 
-def build_server(config: DaemonConfig) -> DynamicContentServer:
-    provider, uploads = build_runtime(config)
+def build_server(
+    config: DaemonConfig,
+    *,
+    log_dir: str | Path | None = None,
+) -> DynamicContentServer:
+    provider, uploads = build_runtime(config, log_dir=log_dir)
     server_config = config.server
     return DynamicContentServer(
         address=str(server_config.get("address", "::")),
@@ -46,10 +54,19 @@ def build_server(config: DaemonConfig) -> DynamicContentServer:
     )
 
 
-def build_runtime(config: DaemonConfig) -> tuple[ScriptedSessionProvider, InMemoryUploadStore]:
+def build_runtime(
+    config: DaemonConfig,
+    *,
+    log_dir: str | Path | None = None,
+) -> tuple[ScriptedSessionProvider, InMemoryUploadStore]:
     sessions = InMemorySessionStore()
     uploads = InMemoryUploadStore(sessions)
-    provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
+    provider = ScriptedSessionProvider(
+        config,
+        sessions=sessions,
+        upload_store=uploads,
+        session_log_dir=log_dir,
+    )
     return provider, uploads
 
 
@@ -157,10 +174,11 @@ def reload_server(
     *,
     config_path: str,
     rootdir: str | None = None,
+    log_dir: str | Path | None = None,
 ) -> None:
     config = load_daemon_config(config_path, rootdir=rootdir)
     configure_logging(str(config.server.get("log_level", "INFO")))
-    provider, uploads = build_runtime(config)
+    provider, uploads = build_runtime(config, log_dir=log_dir)
     server.reload(
         provider=provider,
         upload_store=uploads,
@@ -177,6 +195,7 @@ def install_reload_handler(
     *,
     config_path: str,
     rootdir: str | None = None,
+    log_dir: str | Path | None = None,
     signal_module=signal,
 ) -> Callable[[int, object], None] | None:
     sighup = getattr(signal_module, "SIGHUP", None)
@@ -187,7 +206,12 @@ def install_reload_handler(
     def handle_reload(signum, frame):  # noqa: ARG001
         LOGGER.info("Received signal %s, reloading configuration", signum)
         try:
-            reload_server(server, config_path=config_path, rootdir=rootdir)
+            reload_server(
+                server,
+                config_path=config_path,
+                rootdir=rootdir,
+                log_dir=log_dir,
+            )
         except Exception:
             LOGGER.exception("Failed to reload configuration from %s", config_path)
         else:
@@ -223,8 +247,13 @@ def main(argv: list[str] | None = None) -> int:
     pid_path = write_pidfile(pidfile_path(config))
     LOGGER.info("Wrote pidfile %s", pid_path)
 
-    server = build_server(config)
-    install_reload_handler(server, config_path=args.config, rootdir=args.rootdir)
+    server = build_server(config, log_dir=args.log_dir)
+    install_reload_handler(
+        server,
+        config_path=args.config,
+        rootdir=args.rootdir,
+        log_dir=args.log_dir,
+    )
     try:
         server.run()
     except KeyboardInterrupt:
