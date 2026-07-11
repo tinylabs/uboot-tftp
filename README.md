@@ -3,26 +3,25 @@
 This project is still a work in progress. Expect the API, example scripts, and operational details to change while the design is still settling; it should not be considered stable yet.
 
 TODO:
-- Use u-boot from latest tag if selected tag doesn't contain it on install.
-- Set mtdparts uboot env variable based on flash size.
-- probe available commands in preflight.
-  - Check $? when running commands without args
-- Add internal handling of `bootstrap` and `bootstrap_onboot` tftp commands.
-  - Install the `netinit` and `bootstrap` commands when found.
-  - `bootstrap_onboot` should inject itself into bootcmd with a failover for normal boot when tftp times out.
-  - `unbootstrap` to revert (as a baked in command, not dependent on tftp server running).
-  - Save passed id to use on future bootstrap calls.
-  - Save list of discovered commands/properties to minimize preflight calls.
-  - Use unique namespace prefix for saved commands.
-  - echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
-  - Hosted locally only via python fastapi.
-- Add script logging per session.
-- Generate FIT image with recorded scripts and orchestrator.
-- Add tftp.exec_queue() for non-blocking functions. ie: echo, etc
-  - Queue commands until exec happens. Flush commands on completion.
-- Fix filename on extracted kernel/rootfs.
+- [x] Use u-boot from latest tag if selected tag doesn't contain it on install.
+- [ ] Set mtdparts uboot env variable based on flash size.
+- [x] probe available commands in preflight.
+  - [x] Verify commands dynamically when running with cache.
+- [ ] Add internal handling of `bootstrap` and `bootstrap_onboot` tftp commands.
+  - [ ] Install the `netinit` and `bootstrap` commands when found.
+  - [ ] `bootstrap_onboot` should inject itself into bootcmd with a failover for normal boot when tftp times out.
+  - [ ] `unbootstrap` to revert (as a baked in command, not dependent on tftp server running).
+  - [ ] Save passed id to use on future bootstrap calls.
+  - [ ] Save list of discovered commands/properties to minimize preflight calls.
+  - [ ] Use unique namespace prefix for saved commands.
+  - [ ] echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
+  - [ ] Hosted locally only via python fastapi.
+- [ ] Add script logging per session.
+- [ ] Generate FIT image with recorded scripts and orchestrator.
+- [x] Add tftp.exec_queue() for non-blocking functions. ie: echo, etc
+  - [x] Queue commands until exec happens. Flush commands on completion.
+- [x] Fix filename on extracted kernel/rootfs.
 
-  
 # uboot-tftp
 
 Minimal session-aware TFTP server for OpenIPC and U-Boot style workflows.
