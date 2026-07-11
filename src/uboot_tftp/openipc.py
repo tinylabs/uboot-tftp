@@ -356,6 +356,21 @@ def _find_release_asset_optional(
         return None
 
 
+async def _load_release_manifest(
+    tftp,
+    *,
+    tag: str,
+    cache: bool,
+) -> GithubJsonManifest:
+    manifest = GithubJsonManifest(
+        tftp,
+        path=_openipc_release_path(tag),
+        cache=cache,
+    )
+    await manifest.load()
+    return manifest
+
+
 def _extract_tar_member(
     archive: bytes,
     *,
@@ -391,22 +406,42 @@ async def openipc_load_release_assets(
     tftp,
     context: OpenIpcInstallContext,
 ) -> OpenIpcReleaseAssets:
-    manifest = GithubJsonManifest(
+    manifest = await _load_release_manifest(
         tftp,
-        path=_openipc_release_path(context.tag),
+        tag=context.tag,
         cache=context.cache,
     )
-    await manifest.load()
+    uboot_manifest = manifest
 
-    uboot_asset = openipc_find_release_asset(
+    uboot_asset = _find_release_asset_optional(
         manifest,
         soc=context.soc,
         fw=context.fw,
         partition="uboot",
     )
-    uboot_payload = await manifest.download_asset(
+    if uboot_asset is None and context.tag != "latest":
+        latest_manifest = await _load_release_manifest(
+            tftp,
+            tag="latest",
+            cache=context.cache,
+        )
+        uboot_manifest = latest_manifest
+        uboot_asset = openipc_find_release_asset(
+            latest_manifest,
+            soc=context.soc,
+            fw=context.fw,
+            partition="uboot",
+        )
+    elif uboot_asset is None:
+        uboot_asset = openipc_find_release_asset(
+            manifest,
+            soc=context.soc,
+            fw=context.fw,
+            partition="uboot",
+        )
+    uboot_payload = await uboot_manifest.download_asset(
         uboot_asset,
-        destination=_asset_destination(manifest, uboot_asset, context.soc),
+        destination=_asset_destination(uboot_manifest, uboot_asset, context.soc),
         cache=context.cache,
     )
     release_env = ubootenv_extract(uboot_payload)

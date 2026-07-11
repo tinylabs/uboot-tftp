@@ -305,6 +305,80 @@ def test_openipc_load_release_assets_can_extract_kernel_and_rootfs_from_tgz(monk
     assert release.rootfs_asset["name"] == "rootfs.squashfs"
 
 
+def test_openipc_load_release_assets_falls_back_to_latest_for_missing_tagged_uboot(monkeypatch):
+    module = load_openipc_module()
+    release_env = {
+        "mtdparts": "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+    }
+    assets_by_path = {
+        "OpenIPC/firmware/releases/tags/stable": [
+            {
+                "name": "kernel-gk7205v300-lite.bin",
+                "browser_download_url": "https://example.com/stable-kernel-gk7205v300-lite.bin",
+            },
+            {
+                "name": "rootfs-gk7205v300-lite.bin",
+                "browser_download_url": "https://example.com/stable-rootfs-gk7205v300-lite.bin",
+            },
+        ],
+        "OpenIPC/firmware/releases/tags/latest": [
+            {
+                "name": "u-boot-gk7205v300.bin",
+                "browser_download_url": "https://example.com/latest-u-boot-gk7205v300.bin",
+            },
+        ],
+    }
+    payloads = {
+        "latest-u-boot-gk7205v300.bin": b"uboot",
+        "stable-kernel-gk7205v300-lite.bin": b"kernel",
+        "stable-rootfs-gk7205v300-lite.bin": b"rootfs",
+    }
+    seen_paths = []
+
+    class FakeManifest:
+        def __init__(self, tftp, path, *, cache=False):  # noqa: ARG002
+            self.path = path
+
+        async def load(self):
+            seen_paths.append(self.path)
+            return {}
+
+        def find(self, *, match):
+            return [
+                asset
+                for asset in assets_by_path[self.path]
+                if all(token in asset["name"] for token in match)
+            ]
+
+        async def download_asset(self, asset, *, destination=None, cache=False):  # noqa: ARG002
+            return payloads[Path(destination).name]
+
+    monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
+    monkeypatch.setattr(module, "ubootenv_extract", lambda payload: release_env)
+
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={"soc": "gk7205v300", "fw": "lite"},
+        nor_size=8 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
+        cache=True,
+        tag="stable",
+    )
+
+    release = asyncio.run(module.openipc_load_release_assets(object(), context))
+
+    assert release.manifest.path == "OpenIPC/firmware/releases/tags/stable"
+    assert release.uboot_asset["browser_download_url"] == "https://example.com/latest-u-boot-gk7205v300.bin"
+    assert release.kernel_asset["browser_download_url"] == "https://example.com/stable-kernel-gk7205v300-lite.bin"
+    assert release.rootfs_asset["browser_download_url"] == "https://example.com/stable-rootfs-gk7205v300-lite.bin"
+    assert seen_paths == [
+        "OpenIPC/firmware/releases/tags/stable",
+        "OpenIPC/firmware/releases/tags/latest",
+    ]
+
+
 def test_openipc_build_partition_payloads_prefers_extracted_member_names_for_sources():
     module = load_openipc_module()
     context = module.OpenIpcInstallContext(
