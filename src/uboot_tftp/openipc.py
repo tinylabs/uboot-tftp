@@ -24,7 +24,7 @@ from uboot_tftp.ubootenv import *
 
 OPENIPC_RELEASE_PATH_PREFIX = "OpenIPC/firmware/releases/tags"
 FLASH_SNAPSHOT_RAM_OFFSET = 16 * 2**20
-FLASH_STAGE_RAM_OFFSET = 1024
+FLASH_STAGE_RAM_OFFSET = 1 * 2**20
 
 
 def openipc_partition_table(
@@ -144,23 +144,23 @@ async def openipc_nor_backup (tftp, sz: int, filename: str='', final=False) -> b
     )
     filename = f'backup/{filename}'
     tftp.write_file (filename, binary)
-    await tftp.exec([
-        uboot_msg (f'  Saved backup as {filename}')
-    ], final=final)
+    msg = uboot_msg (f'  Saved backup as {filename}')
+    await tftp.exec([msg], final=True) if final else tftp.exec_queue([msg])
 
-async def openipc_nor_restore (tftp, filename: str, sz: int):
+async def openipc_nor_restore (tftp, filename: str, sz: int, final=False):
+    requires = []
     script = [
         uboot_msg (f"Uploading {Path(filename).name}... ", nl=False, bold=True),
-        uboot_fetch_static (tftp, filename, offset=1024),
+        uboot_fetch_static (tftp, filename, offset=1024, requires=requires),
         uboot_msg ("OK"),
         uboot_msg ("Erasing flash... ", nl=False, bold=True),
-        uboot_nor_erase (offset=0, size=sz),
+        uboot_nor_erase (offset=0, size=sz, requires=requires),
         uboot_msg ("OK"),
         uboot_msg ("Writing flash... ", nl=False, bold=True),
-        uboot_nor_write (tftp, nor_offset=0, ram_offset=1024, size=sz),
+        uboot_nor_write (tftp, nor_offset=0, ram_offset=1024, size=sz, requires=requires),
         uboot_msg ("OK"),
     ]
-    await tftp.exec (script)
+    await tftp.exec (script, requires=requires, final=True) if final else tftp.exec_queue(script, requires=requires)
 
 def build_runcmd(cmd: str, args: str=''):
     parts = [f"cmd={cmd}"]
@@ -194,7 +194,7 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
             'run netinit',
             f'if tftpboot {tftp.rambase} '+'${serverip}:id=${hostname}/${cmd}/${args}',
             f'then source {tftp.rambase}',
-            'else echo "TFTP request failed: is TFTP server running?"',
+            'else echo "TFTP request failed: is TFTP server running @ ${serverip}?"',
             'fi'
         ]),
         'netinit'    : '; '.join ([
@@ -243,7 +243,7 @@ async def openipc_collect_install_context(
             uboot_msg("Fetching current uboot environment... ", nl=False, bold=True),
         ]
     )
-    await tftp.exec([uboot_msg("OK")])
+    tftp.exec_queue([uboot_msg("OK")])
 
     keys = ["nor_size", "fw", "soc", "cache", "tag"]
     cenv.update({k: tftp_env[k] for k in keys if k in tftp_env})
@@ -261,8 +261,9 @@ async def openipc_collect_install_context(
         tftp,
         max_size=tftp_env.get("nor_size", None),
         pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-        post_cmds=[uboot_msg("${size}")],
+        post_cmds=[uboot_msg("OK")],
     )
+
     if nor_size == 0:
         raise ValueError("NOR flash not detected! Aborting...")
 
@@ -563,7 +564,7 @@ def openipc_build_partition_payloads(
             offset=env_entry.offset,
             size=env_entry.size,
             payload=env_payload,
-            source=f"{context.ident}.bin",
+            source=f"{context.ident}-env.bin",
         ),
         PartitionPayload(
             name="kernel",
@@ -594,19 +595,20 @@ def openipc_format_update_summary(plan) -> list[str]:
 
 
 def _stage_partition_filename(ident: str, update: PartitionUpdate) -> str:
-    return f"install/{update.name}-{Path(update.source).name}"
+    return f"install/{Path(update.source).name}"
 
 
 async def openipc_flash_partition(tftp, ident: str, update: PartitionUpdate) -> None:
     filename = _stage_partition_filename(ident, update)
     tftp.write_file(filename, update.payload)
-    await tftp.exec(
+    requires = []
+    tftp.exec_queue(
         [
             uboot_msg(f"Uploading {Path(filename).name}... ", nl=False, bold=True),
-            uboot_fetch_static(tftp, filename, offset=FLASH_STAGE_RAM_OFFSET),
+            uboot_fetch_static(tftp, filename, offset=FLASH_STAGE_RAM_OFFSET, requires=requires),
             uboot_msg("OK"),
             uboot_msg(f"Erasing {update.name}... ", nl=False, bold=True),
-            uboot_nor_erase(offset=update.offset, size=update.size),
+            uboot_nor_erase(offset=update.offset, size=update.size, requires=requires),
             uboot_msg("OK"),
             uboot_msg(f"Writing {update.name}... ", nl=False, bold=True),
             uboot_nor_write(
@@ -614,9 +616,11 @@ async def openipc_flash_partition(tftp, ident: str, update: PartitionUpdate) -> 
                 nor_offset=update.offset,
                 ram_offset=FLASH_STAGE_RAM_OFFSET,
                 size=len(update.payload),
+                requires=requires,
             ),
             uboot_msg("OK"),
-        ]
+        ],
+        requires=requires
     )
 
 async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
@@ -624,31 +628,31 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     function: openipc_install - Fully automated openipc install to NOR flash.
     '''
     try:
+        requires = []
         context = await openipc_collect_install_context(tftp, ident, cmd, tftp_env)
         release = await openipc_load_release_assets(tftp, context)
         payloads = openipc_build_partition_payloads(tftp, context, release)
-        await tftp.exec([
+        tftp.exec_queue([
             uboot_msg("Copying NOR flash to RAM... ", bold=True, nl=False),
             uboot_nor_read(
                 tftp,
                 nor_offset=0,
                 ram_offset=FLASH_SNAPSHOT_RAM_OFFSET,
                 size=context.nor_size,
+                requires=requires,
             ),
             uboot_msg("OK"),
-        ])
+        ], requires=requires)
         plan = await build_partition_update_plan(
             tftp,
             payloads,
             snapshot_base_addr=tftp.rambase_addr + FLASH_SNAPSHOT_RAM_OFFSET,
             key_prefix="openipc_",
         )
-        await tftp.exec(
-            [
+        tftp.exec_queue([
                 uboot_msg("Partition update plan:", bold=True),
                 *openipc_format_update_summary(plan),
-            ]
-        )
+        ])
         pending = plan.pending()
         if not pending:
             await tftp.exec(
@@ -658,7 +662,7 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             return
         for update in pending:
             await openipc_flash_partition(tftp, ident, update)
-        await tftp.exec(
+        tftp.exec_queue(
             [
                 uboot_msg(),
                 uboot_msg(f"Install finished for {ident}", bold=True),
@@ -709,16 +713,16 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 tftp,
                 max_size=tftp_env.get('nor_size', None),
                 pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-                post_cmds=[uboot_msg('${size}')],
-                final=True,
+                post_cmds=[uboot_msg('OK')],
             )
+            await tftp.exec(uboot_msg(f'nor size={sz}'), final=True)
 
         case 'backup':
             sz = await uboot_nor_probe(
                 tftp,
                 max_size=tftp_env.get('nor_size', None),
                 pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-                post_cmds=[uboot_msg('${size}')],
+                post_cmds=[uboot_msg('OK')],
             )
             filename = tftp_env.get ('filename', '')
             await openipc_nor_backup(tftp, sz, filename, final=True)            
@@ -750,7 +754,7 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 (0x46000000, 0x1000000), # Stable
                 (0x47000000, 0x1000000), # TLBs, stack, etc (changes crc)
             ]
-            
+
             res = await uboot_crc32(tftp, ranges)
             cmds = [
                 uboot_msg(f'0x{addr:08x}:0x{addr + length - 1:08x} => 0x{res[_]:08x}')
@@ -758,6 +762,22 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             ]
             await tftp.exec(cmds, final=True)
 
+        case 'cmd_check':
+            cmds = ['cmdtftpput']
+            # This will force a check
+            ok = await tftp.exec([
+                uboot_msg(f'{cmds} present'),
+            ], requires=cmds)
+            # supported cmds will be cached here...
+            ok = await tftp.exec([
+                uboot_msg(f'{cmds} present'),
+            ], requires=cmds)
+            if not ok:
+                msg = uboot_err('failed')
+            else:
+                msg = uboot_msg('passed')
+            await tftp.exec([msg], final=True)
+                        
         # Unrecognized cmd
         case _:
             await uboot_nomatch(tftp, ident, cmd,
