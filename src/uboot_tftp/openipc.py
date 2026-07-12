@@ -715,7 +715,7 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
                 post_cmds=[uboot_msg('OK')],
             )
-            await tftp.exec(uboot_msg(f'nor size={sz}'), final=True)
+            await tftp.exec(uboot_msg(f'NOR size={sz//2**20}M'), final=True)
 
         case 'backup':
             sz = await uboot_nor_probe(

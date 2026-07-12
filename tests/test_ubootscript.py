@@ -14,6 +14,7 @@ from uboot_tftp.ubootscript import (
 class FakeTftp:
     rambase = "${loadaddr}"
     server_ip = "127.0.0.1"
+    cmdtftp = "tftpboot"
 
 
 def test_uboot_memset_uses_session_rambase_and_unsets_tmp():

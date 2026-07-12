@@ -143,13 +143,12 @@ def uboot_fetch_static(
     addr_var = _next_tmp("addr")
     base_expr = _normalize_base(tftp, base)
     remote_path = str(filename).lstrip("/")
-    command = getattr(tftp, "cmdtftp", "tftpboot")
     if offset is None:
-        return f'{command} {tftp.rambase} "{tftp.server_ip}:{remote_path}"'
+        return f'{tftp.cmdtftp} {tftp.rambase} "{tftp.server_ip}:{remote_path}"'
     return "\n".join(
         (
             f"setexpr {addr_var} {base_expr} + {_format_number(offset)}",
-            f'{command} ${{{addr_var}}} "{tftp.server_ip}:{remote_path}"',
+            f'{tftp.cmdtftp} ${{{addr_var}}} "{tftp.server_ip}:{remote_path}"',
             f"setenv {addr_var}",
         )
     )

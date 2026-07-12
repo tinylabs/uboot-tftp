@@ -194,7 +194,7 @@ async def uboot_crc32(
         LOGGER.error(
             "Rejecting CRC32 request with too many ranges: count=%d max=6 ident=%s",
             len(batch),
-            getattr(tftp, "ident", None),
+            tftp.ident,
         )
         await tftp.exec([uboot_err(msg)], final=True)
         raise ValueError(msg)
@@ -239,7 +239,10 @@ def _normalize_cmds(cmds: Iterable[str]) -> list[str]:
 def _resolve_little_endian(tftp: Any, little_endian: bool | None) -> bool:
     if little_endian is not None:
         return little_endian
-    value = getattr(tftp, "is_le", None)
+    try:
+        value = tftp.is_le
+    except RuntimeError as error:
+        raise ValueError("little_endian must be provided when tftp.is_le is unavailable") from error
     if value is None:
         raise ValueError("little_endian must be provided when tftp.is_le is unavailable")
     return bool(value)

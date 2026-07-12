@@ -15,6 +15,7 @@ class FakeHandle:
     def __init__(self, env=None):
         self.rambase = "${loadaddr}"
         self.is_le = True
+        self.ident = "fake"
         self.env = {} if env is None else dict(env)
         self.session = SimpleNamespace(env=self.env)
         self.exec_calls = []
