@@ -21,10 +21,14 @@ TODO:
 - [x] Add tftp.exec_queue() for non-blocking functions. ie: echo, etc
   - [x] Queue commands until exec happens. Flush commands on completion.
 - [x] Fix filename on extracted kernel/rootfs.
+- [x] Create scoped u-boot variables to avoid u-boot env contamination and expose tftp.bind() for user scripts.
 
 # uboot-tftp
 
-Minimal session-aware TFTP server for OpenIPC and U-Boot style workflows.
+Session-aware TFTP server for OpenIPC and U-Boot style workflows. In addition to standard TFTP get/put operations it can
+act as a remote command and control server to implement advanced logic from a user supplied python script. The operations
+include python wrappers for calling builtin u-boot cmds, downloading repo assets from github and more. The python logic is
+synchronous so different operations can be performed based on the result of previous operations.
 
 There are only two request modes:
 
@@ -33,7 +37,7 @@ There are only two request modes:
 
 ## Sample implementation - OpenIPC: https://wiki.openipc.org/
 
-uboot-tftp is a generic python scripted dynamic tftp server.
+uboot-tftp is a python scripted dynamic tftp server.
 
 It only requires the following dependencies:
 
@@ -43,7 +47,7 @@ It only requires the following dependencies:
 
 As a proof of concept, an implementation for installation of the openipc project has been implemented.
 
-See [openipc.py](scripts/openipc.py) for the reference implementation.
+See [openipc.py](src/uboot_tftp/openipc.py) for the reference implementation.
 
 ## Installation
 
