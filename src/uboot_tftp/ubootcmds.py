@@ -66,7 +66,7 @@ _REGISTRY: dict[str, CommandSpec] = {
     ),
     "setexpr": CommandSpec(
         policy="probe",
-        probe_lines=("setexpr __uboot_tftp_probe 1 + 1",),
+        probe_lines=("setexpr {result_key} 1 + 1",),
     ),
     "cp": CommandSpec(
         policy="probe",
@@ -176,9 +176,10 @@ def build_probe_batch(
     session_env: dict[str, str],
     *,
     key_prefix: str = "_",
+    keys: list[str] | None = None,
 ) -> tuple[list[str], list[str], dict[str, str]]:
     lines: list[str] = []
-    keys: list[str] = []
+    output_keys: list[str] = []
     key_map: dict[str, str] = {}
     rambase_var = session_env.get("rambase", "").strip()
     if not rambase_var:
@@ -190,12 +191,15 @@ def build_probe_batch(
             raise ValueError(f"command {command!r} is not probeable")
         if not spec.probe_lines:
             raise ValueError(f"command {command!r} is missing probe lines")
-        key = f"{key_prefix}{index}"
-        lines.extend(line.format(rambase=rambase) for line in spec.probe_lines)
+        key = keys[index] if keys is not None else f"{key_prefix}{index}"
+        lines.extend(
+            line.format(rambase=rambase, result_key=key)
+            for line in spec.probe_lines
+        )
         lines.append(f"setenv {key} $?")
-        keys.append(key)
+        output_keys.append(key)
         key_map[command] = key
-    return lines, keys, key_map
+    return lines, output_keys, key_map
 
 
 def get_command_spec(command: str) -> CommandSpec:

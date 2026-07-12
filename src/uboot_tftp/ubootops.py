@@ -19,6 +19,10 @@ from .ubootterm import uboot_err, uboot_msg, uboot_progress, uboot_status, uboot
 LOGGER = logging.getLogger(__name__)
 
 
+def _rewrite_var_refs(cmds: Iterable[str], old: str, new: str) -> list[str]:
+    return [str(cmd).replace(f"${{{old}}}", f"${{{new}}}") for cmd in cmds]
+
+
 def _download_progress_lines(artifact) -> str:
     kib = artifact.bytes_done / 1024
     script = [uboot_status(f"{kib:.1f} kB")]
@@ -98,33 +102,41 @@ async def uboot_nor_probe(
     pre_cmds: Iterable[str] = (),
     post_cmds: Iterable[str] = (),
     final: bool = False,
-    status_key: str = "status",
-    size_key: str = "size",
 ) -> int:
     """Probe NOR flash and return the detected size in bytes."""
 
     requires=['sf probe', 'setenv']
     parsed_max_size = _parse_max_size(max_size)
+    status_return = tftp.bind("__nor_probe_status", source_key="_r0", public=False)
+    size_return = tftp.bind("__nor_probe_size", source_key="_r1", public=False)
+    probe_body = [
+        *uboot_nor_gen_probe(
+            tftp,
+            2**20,
+            parsed_max_size,
+            requires=requires,
+            result_var=size_return.capture(),
+        ),
+        *_rewrite_var_refs(_normalize_cmds(post_cmds), "__nor_probe_size", size_return.capture()),
+    ]
     await tftp.exec(
         [
             *_normalize_cmds(pre_cmds),
             "sf probe 0",
-            f"setenv {status_key} $?",
+            f"setenv {status_return.capture()} $?",
+            f"if test ${{{status_return.capture()}}} -ne 0; then",
+            f"    setenv {size_return.capture()} 0",
+            "else",
+            *(f"    {line}" for line in probe_body),
+            "fi",
         ],
-        keys=[status_key],
-        requires=requires)
-    if tftp.env[status_key] == "1":
-        return 0
-    await tftp.exec(
-        [
-            *uboot_nor_gen_probe(tftp, 2**20, parsed_max_size, requires=requires),
-            *_normalize_cmds(post_cmds),
-        ],
-        keys=[size_key],
         requires=requires,
+        returns=[status_return, size_return],
         final=final,
     )
-    return int(tftp.env[size_key], 0)
+    if status_return.int() != 0:
+        return 0
+    return size_return.int()
 
 
 async def uboot_exec_delay(
@@ -193,6 +205,10 @@ async def uboot_crc32(
     endian = _resolve_little_endian(tftp, little_endian)
     scratch_addr = scratch if scratch is not None else tftp.rambase
     keys = [f"{key_prefix}{index}" for index in range(len(batch))]
+    returns = [
+        tftp.bind(key, source_key=f"_r{index}", public=False)
+        for index, key in enumerate(keys)
+    ]
     script = [*_normalize_cmds(pre_cmds)]
     requires = []
     for index, (addr, length) in enumerate(batch):
@@ -201,16 +217,21 @@ async def uboot_crc32(
                 addr,
                 length,
                 scratch=scratch_addr,
-                result=keys[index],
+                result=returns[index].capture(),
                 requires=requires,
             )
         )
     script.extend(_normalize_cmds(post_cmds))
-    await tftp.exec(script, keys=keys, requires=requires, final=final)
+    await tftp.exec(
+        script,
+        requires=requires,
+        returns=returns,
+        final=final,
+    )
 
     values: list[int] = []
     for key in keys:
-        raw = bytes.fromhex(tftp.env[key].zfill(8))
+        raw = bytes.fromhex(tftp.session.env[key].zfill(8))
         values.append(struct.unpack("<I" if endian else ">I", raw)[0])
     return values
 

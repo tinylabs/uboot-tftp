@@ -164,6 +164,7 @@ def uboot_nor_gen_probe(
     known_good: int = 0,
     offset: int = 0,
     base: str | None = None,
+    result_var: str = "size",
 ) -> list[str]:
     """ Return uboot snippet to probe NOR and return size in 'size'"""
 
@@ -171,17 +172,17 @@ def uboot_nor_gen_probe(
     if script is None:
         script = []
         requires = requires or []
-        requires += ['sf read', 'if', 'test']
+        requires += ['sf read', 'if', 'test', 'setenv']
     if sz > max_sz:
-        script.append(f"size={known_good:#x};\n")
+        script.append(f"setenv {result_var} {known_good:#x};\n")
         return script
     script.append(f"echo {RESTORE_CURSOR}{CLEAR_REGION}")
     script.append(f"sf read {base_expr} {offset:#x} {sz:#x};\n")
     script.append("if test $? -eq 1; then\n")
-    script.append(f"size={known_good:#x};\n")
+    script.append(f"setenv {result_var} {known_good:#x};\n")
     script.append("else\n")
     uboot_nor_gen_probe(tftp, sz * 2, max_sz, script,
-                        known_good=sz, offset=offset, base=base, requires=requires)
+                        known_good=sz, offset=offset, base=base, requires=requires, result_var=result_var)
     script.append("fi;\n")
     return script
 
@@ -211,7 +212,13 @@ def uboot_crc32_gen(
     ]
 
 def _next_tmp(kind: str) -> str:
-    return f"_{next(_TMP_COUNTER)}"
+    _ = kind
+    return f"t{next(_TMP_COUNTER)}"
+
+
+def reset_tmp_counter() -> None:
+    global _TMP_COUNTER
+    _TMP_COUNTER = itertools.count(0)
 
 
 def _normalize_base(tftp: Any, base: str | None) -> str:

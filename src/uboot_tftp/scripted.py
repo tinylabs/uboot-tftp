@@ -5,11 +5,12 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import itertools
 import re
 import secrets
 import socket
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 
@@ -18,7 +19,12 @@ from .download_jobs import DownloadArtifact, DownloadJobStore
 from .mkimage import LegacyScriptImageCompiler
 from .protocol import ParsedPath, parse_request_path
 from .providers import ContentRequest, ContentResult, DynamicContentProvider
-from .sessions import ClientSession, InMemorySessionStore, PendingReceive
+from .sessions import (
+    ClientSession,
+    InMemorySessionStore,
+    PendingFrameworkReturn,
+    PendingReceive,
+)
 from .ubootcmds import (
     build_probe_batch,
     framework_required_commands,
@@ -27,6 +33,7 @@ from .ubootcmds import (
 )
 from .ubootterm import uboot_err, uboot_msg, uboot_term_reset
 from .ubootenv import ubootenv_parse_export
+from .ubootscript import reset_tmp_counter as reset_script_snippet_tmp_counter
 from .uploads import InMemoryUploadStore
 
 
@@ -35,11 +42,53 @@ class ReceiveFailedError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ReturnBinding:
+    session: ClientSession
+    source_key: str
+    logical_key: str | None = None
+    public: bool = False
+    clear_source: bool = True
+    kind: str = "value"
+    command: str | None = None
+
+    def capture(self) -> str:
+        return self.source_key
+
+    def str(self) -> str:
+        if self.logical_key is None:
+            raise RuntimeError("return binding does not expose a logical key")
+        return self.session.env[self.logical_key]
+
+    def int(self) -> int:
+        return int(self.str(), 0)
+
+
+@dataclass(frozen=True)
+class _ReturnBindings:
+    keys: tuple[str, ...] = ()
+    managed: tuple[ReturnBinding, ...] = ()
+
+    def with_managed(self, *bindings: ReturnBinding) -> "_ReturnBindings":
+        if not bindings:
+            return self
+        return _ReturnBindings(
+            keys=self.keys,
+            managed=(*self.managed, *bindings),
+        )
+
+    def with_keys(self, keys: Iterable[str]) -> "_ReturnBindings":
+        return _ReturnBindings(
+            keys=_normalize_return_keys(keys),
+            managed=self.managed,
+        )
+
+
+@dataclass(frozen=True)
 class _ExecutionRequest:
     script: str
     final: bool
     receive_size: int | None = None
-    return_keys: tuple[str, ...] = ()
+    returns: _ReturnBindings = field(default_factory=_ReturnBindings)
     receive_offset: int | str | None = None
     required_cmds: tuple[str, ...] = ()
 
@@ -121,25 +170,16 @@ class SessionHandle:
         *,
         final: bool = False,
         keys: Iterable[str] = (),
+        returns: Iterable[ReturnBinding] = (),
         requires: Iterable[str] = (),
     ) -> bool:
-        required_cmds = _normalize_required_cmds(
-            (*self.session.queued_required_cmds, *tuple(requires))
-        )
-        body = _join_script_lines(
-            (
-                *self.session.queued_scripts,
-                _join_script_lines(script),
-            )
-        )
-        self.session.queued_scripts.clear()
-        self.session.queued_required_cmds.clear()
         return await _ExecutionAwaitable(
-            _ExecutionRequest(
-                script=body,
+            self._build_request(
+                script,
                 final=final,
-                return_keys=_normalize_return_keys(keys),
-                required_cmds=required_cmds,
+                keys=keys,
+                returns=returns,
+                requires=requires,
             )
         )
 
@@ -150,11 +190,56 @@ class SessionHandle:
         *,
         final: bool = False,
         keys: Iterable[str] = (),
+        returns: Iterable[ReturnBinding] = (),
         offset: int | str | None = None,
         requires: Iterable[str] = (),
     ) -> bytes:
         if final:
             raise ValueError("exec_recv(..., final=True) is not supported")
+        result = await _ExecutionAwaitable(
+            self._build_request(
+                script,
+                final=False,
+                size=size,
+                keys=keys,
+                returns=returns,
+                offset=offset,
+                requires=requires,
+            )
+        )
+        if result is None:
+            raise ReceiveFailedError("expected WRQ upload before continuation RRQ")
+        return result
+
+    def exec_queue(self, script: Iterable[str], *, requires: Iterable[str] = ()) -> None:
+        self.session.queued_scripts.extend(line for line in script if line)
+        self.session.queued_required_cmds.extend(_normalize_required_cmds(requires))
+
+    def bind(
+        self,
+        logical_key: str,
+        *,
+        source_key: str | None = None,
+        public: bool = True,
+    ) -> ReturnBinding:
+        return _new_return_binding(
+            self.session,
+            logical_key=logical_key,
+            source_key=source_key,
+            public=public,
+        )
+
+    def _build_request(
+        self,
+        script: str | Iterable[str],
+        *,
+        final: bool,
+        size: int | None = None,
+        keys: Iterable[str] = (),
+        returns: Iterable[ReturnBinding] = (),
+        offset: int | str | None = None,
+        requires: Iterable[str] = (),
+    ) -> _ExecutionRequest:
         required_cmds = _normalize_required_cmds(
             (*self.session.queued_required_cmds, *tuple(requires))
         )
@@ -166,23 +251,17 @@ class SessionHandle:
         )
         self.session.queued_scripts.clear()
         self.session.queued_required_cmds.clear()
-        result = await _ExecutionAwaitable(
-            _ExecutionRequest(
-                script=body,
-                final=False,
-                receive_size=size,
-                return_keys=_normalize_return_keys(keys),
-                receive_offset=offset,
-                required_cmds=required_cmds,
-            )
+        return _ExecutionRequest(
+            script=body,
+            final=final,
+            receive_size=size,
+            returns=_ReturnBindings(
+                keys=_normalize_return_keys(keys),
+                managed=tuple(returns),
+            ),
+            receive_offset=offset,
+            required_cmds=required_cmds,
         )
-        if result is None:
-            raise ReceiveFailedError("expected WRQ upload before continuation RRQ")
-        return result
-
-    def exec_queue(self, script: Iterable[str], *, requires: Iterable[str] = ()) -> None:
-        self.session.queued_scripts.extend(line for line in script if line)
-        self.session.queued_required_cmds.extend(_normalize_required_cmds(requires))
 
     def write_file(self, destination: str | Path, body: bytes) -> Path:
         target = _resolve_static_path(self.provider.static_root, "/" + str(destination))
@@ -248,8 +327,9 @@ class SessionHandle:
         export_lines = (
             export_script if export_script is not None else [f"env export -t {self.rambase}"]
         )
-        await self.exec(export_lines, keys=[size_key])
-        size_text = self.env.get(size_key)
+        size_return = self.bind(size_key, source_key="filesize", public=True)
+        await self.exec(export_lines, returns=[size_return])
+        size_text = self.session.env.get(size_key)
         if size_text is None:
             raise ValueError(f"missing {size_key!r} after environment export")
         try:
@@ -289,13 +369,23 @@ class SessionHandle:
             raise ValueError(f"unexpected command policy for {command!r}: {spec.policy}")
 
         if probe_list:
-            script, keys, key_map = build_probe_batch(probe_list, self.session.env)
-            await self.exec(script, keys=keys)
-            for command in probe_list:
-                if self.session.env.get(key_map[command]) == "0":
-                    self.session.supported_cmds.add(command)
-                else:
-                    self.session.unsupported_cmds.add(command)
+            probe_returns = [
+                _new_return_binding(
+                    self.session,
+                    None,
+                    source_key=f"_c{index}",
+                    public=False,
+                    kind="probe",
+                    command=command,
+                )
+                for index, command in enumerate(probe_list)
+            ]
+            script, _, _ = build_probe_batch(
+                probe_list,
+                self.session.env,
+                keys=[binding.capture() for binding in probe_returns],
+            )
+            await self.exec(script, returns=probe_returns)
 
         return [command for command in commands if command in self.session.supported_cmds]
 
@@ -356,7 +446,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
             raise FileNotFoundError(f"invalid session token for {parsed.client_id!r}")
         session.record_rrq(parsed)
         _merge_continuation_values(session, parsed)
-        _consume_pending_command_probes(session)
+        _queue_pending_cleanup(session)
         if session.preflight_pending:
             session.preflight_pending = False
             if session.env.get("hush_shell") != "true":
@@ -386,6 +476,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
         request: ContentRequest,
         send_value: object,
     ) -> ContentResult:
+        _reset_per_instruction_allocators(session)
         try:
             if send_value is _NO_EXEC_RESULT:
                 instruction = session.handler.send(None)
@@ -430,11 +521,34 @@ class ScriptedSessionProvider(DynamicContentProvider):
     def _preflight_result(self, session: ClientSession, request: ContentRequest) -> ContentResult:
         session.current_token = _new_token()
         session.phase = "await_rrq"
+        preflight_returns = _ReturnBindings(
+            managed=(
+                _new_return_binding(
+                    session,
+                    logical_key="hush_shell",
+                    source_key="hush_shell",
+                    public=False,
+                ),
+                _new_return_binding(
+                    session,
+                    logical_key="_1",
+                    source_key="_1",
+                    public=False,
+                ),
+                _new_return_binding(
+                    session,
+                    logical_key=session.env["rambase"],
+                    source_key=session.env["rambase"],
+                    public=False,
+                    clear_source=False,
+                ),
+            )
+        )
         script = self._append_continue(
             _preflight_probe_script(session.env["rambase"]),
             session,
             recv_status=None,
-            return_keys=("hush_shell", "_1", session.env["rambase"]),
+            returns=preflight_returns,
         )
         self._log_session_script(session, request, _ensure_newline(script))
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
@@ -448,8 +562,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
         if not isinstance(instruction, _ExecutionRequest):
             raise TypeError("session handlers must await tftp.exec(...) helpers")
         script = instruction.script.rstrip()
-        return_keys = instruction.return_keys
-        session.pending_exec_status_key = None
+        returns = instruction.returns
         if instruction.expects_upload:
             token = _new_token()
             session.current_token = token
@@ -460,46 +573,52 @@ class ScriptedSessionProvider(DynamicContentProvider):
                 size=instruction.receive_size or 0,
             )
             session.phase = "await_upload"
-            script, return_keys = self._append_receive(
+            script, returns = self._append_receive(
                 script,
                 session,
-                return_keys,
+                returns,
                 instruction.receive_offset,
                 instruction.required_cmds,
             )
         elif instruction.final:
             session.phase = "complete"
-            script, return_keys = _apply_required_command_guards(
+            session.pending_exec_result_default = None
+            script, returns = _apply_required_command_guards(
                 session,
                 script,
                 instruction.required_cmds,
-                return_keys,
+                returns,
             )
             self._discard_session(session)
         else:
             session.current_token = _new_token()
             session.phase = "await_rrq"
             failure_status_script = None
+            session.pending_exec_result_default = True
             if instruction.required_cmds and not instruction.final:
-                status_key = _new_tmp_name("exec_status")
-                session.pending_exec_status_key = status_key
-                script = _join_script_lines((script, f"setenv {status_key} 1"))
-                return_keys = return_keys + (status_key,)
-                failure_status_script = f"setenv {status_key} 0"
-            else:
-                session.pending_exec_status_key = ""
-            script, return_keys = _apply_required_command_guards(
+                exec_status = _new_return_binding(
+                    session,
+                    logical_key=_EXEC_STATUS_LOGICAL_KEY,
+                    source_key="_s",
+                    public=False,
+                    kind="exec_status",
+                )
+                script = _join_script_lines((script, f"setenv {exec_status.capture()} 1"))
+                returns = returns.with_managed(exec_status)
+                failure_status_script = f"setenv {exec_status.capture()} 0"
+                session.pending_exec_result_default = None
+            script, returns = _apply_required_command_guards(
                 session,
                 script,
                 instruction.required_cmds,
-                return_keys,
+                returns,
                 on_failure_script=failure_status_script,
             )
             script = self._append_continue(
                 script,
                 session,
                 recv_status=None,
-                return_keys=return_keys,
+                returns=returns,
             )
         self._log_session_script(session, request, _ensure_newline(script))
         return ContentResult.from_bytes(self.compiler.compile(_ensure_newline(script)))
@@ -510,12 +629,12 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session: ClientSession,
         *,
         recv_status: str | None,
-        return_keys: tuple[str, ...] = (),
+        returns: _ReturnBindings = _ReturnBindings(),
     ) -> str:
         command = self._continue_command(
             session,
             recv_status=recv_status,
-            return_keys=return_keys,
+            returns=returns,
         )
         return _join_script_lines((script, command))
 
@@ -524,14 +643,16 @@ class ScriptedSessionProvider(DynamicContentProvider):
         session: ClientSession,
         *,
         recv_status: str | None,
-        return_keys: tuple[str, ...] = (),
+        returns: _ReturnBindings = _ReturnBindings(),
     ) -> str:
         if session.current_token is None:
             raise RuntimeError("missing continuation token")
         path = f"id={session.client_id}/token={session.current_token}"
         if recv_status is not None:
             path = f"{path}/recv={recv_status}"
-        path = _append_return_keys(path, return_keys)
+        session.pending_user_return_keys = set(returns.keys)
+        session.pending_framework_returns = _assign_framework_returns(returns)
+        path = _append_return_keys(path, returns.keys, session.pending_framework_returns)
         command = (
             f'if {session.env["cmdtftp"]} ${{{session.env["rambase"]}}} '
             f'"{session.server_ip}:{path}"; '
@@ -544,10 +665,10 @@ class ScriptedSessionProvider(DynamicContentProvider):
         self,
         script: str,
         session: ClientSession,
-        return_keys: tuple[str, ...],
+        returns: _ReturnBindings,
         receive_offset: int | str | None,
         required_cmds: tuple[str, ...],
-    ) -> tuple[str, tuple[str, ...]]:
+    ) -> tuple[str, _ReturnBindings]:
         pending = session.pending_receive
         if pending is None:
             raise RuntimeError("missing pending receive state")
@@ -557,25 +678,34 @@ class ScriptedSessionProvider(DynamicContentProvider):
             failure = self._continue_command(
                 session=session,
                 recv_status="failed",
-                return_keys=return_keys,
+                returns=returns,
             )
             guarded_body = _join_script_lines((*_required_command_error_lines(missing), failure))
-            return _join_script_lines((prelude, guarded_body, cleanup)), return_keys
+            return _join_script_lines((prelude, guarded_body, cleanup)), returns
 
         if probe_commands:
+            probe_returns = tuple(
+                _new_return_binding(
+                    session,
+                    logical_key=None,
+                    source_key=f"_c{index}",
+                    public=False,
+                    kind="probe",
+                    command=command,
+                )
+                for index, command in enumerate(probe_commands)
+            )
             probe_lines, probe_keys, key_map = build_probe_batch(
                 probe_commands,
                 session.env,
-                key_prefix="_c",
+                keys=[binding.capture() for binding in probe_returns],
             )
-            session.pending_command_probes = {key: command for command, key in key_map.items()}
-            return_keys = return_keys + tuple(probe_keys)
+            returns = returns.with_managed(*probe_returns)
             ok_var = _new_tmp_name("cmds_ok")
             checks = [f"setenv {ok_var} 1"]
             for key in probe_keys:
                 checks.append(f"if test ${{{key}}} -ne 0; then setenv {ok_var} 0; fi")
         else:
-            session.pending_command_probes.clear()
             probe_lines = []
             probe_keys = []
             checks = []
@@ -585,12 +715,12 @@ class ScriptedSessionProvider(DynamicContentProvider):
         success = self._continue_command(
             session=session,
             recv_status="ok",
-            return_keys=return_keys,
+            returns=returns,
         )
         failure = self._continue_command(
             session=session,
             recv_status="failed",
-            return_keys=return_keys,
+            returns=returns,
         )
         receive = (
             f'if {session.env["cmdtftpput"]} {upload_address} {_format_uboot_number(pending.size)} '
@@ -617,7 +747,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
             )
         else:
             guarded_body = _join_script_lines((script, receive))
-        return _join_script_lines((prelude, guarded_body, cleanup)), return_keys
+        return _join_script_lines((prelude, guarded_body, cleanup)), returns
 
     def _route_for(self, client_id: str | None):
         return self.config.default if client_id is None else self.config.routes.get(
@@ -696,11 +826,11 @@ def _preflight_probe_script(rambase_var: str) -> str:
             uboot_term_reset(),
             uboot_msg("Executing preflight... ", nl=False, bold=True),
             "if true; then setenv hush_shell true; fi",
-            f"setexpr.l tmp *{rambase}",
+            "setexpr.l t0 *${" + rambase_var + "}",
             f"mw.l {rambase} 0x11223344 1",
             f"setexpr.b _1 *{rambase}",
-            f"mw.l {rambase} ${{tmp}} 1",
-            "setenv tmp",
+            f"mw.l {rambase} ${{t0}} 1",
+            "setenv t0",
         )
     )
 
@@ -742,8 +872,19 @@ def _public_env(env: dict[str, str]) -> dict[str, str]:
 
 
 def _merge_continuation_values(session: ClientSession, parsed: ParsedPath) -> None:
+    consumed = {"token", "recv"}
+    for key in session.pending_user_return_keys:
+        value = parsed.values.get(key)
+        if value is None:
+            continue
+        session.env[key] = value
+        if key not in {"rambase", "cmdtftp", "cmdtftpput"}:
+            session.public_env[key] = value
+        consumed.add(key)
+    session.pending_user_return_keys.clear()
+    consumed.update(_consume_pending_framework_returns(session, parsed))
     for key, value in parsed.values.items():
-        if key in {"token", "recv"}:
+        if key in consumed:
             continue
         session.env[key] = value
         if key not in {"rambase", "cmdtftp", "cmdtftpput"}:
@@ -764,36 +905,57 @@ def _normalize_required_cmds(cmds: Iterable[str]) -> tuple[str, ...]:
     return tuple(str(cmd) for cmd in cmds if str(cmd).strip())
 
 
-def _append_return_keys(path: str, keys: tuple[str, ...]) -> str:
+def _append_return_keys(
+    path: str,
+    keys: tuple[str, ...],
+    framework_returns: dict[str, PendingFrameworkReturn],
+) -> str:
     for key in keys:
         path = f"{path}/{key}=${{{key}}}"
+    for wire_key, binding in framework_returns.items():
+        path = f"{path}/{wire_key}=${{{binding.source_key}}}"
     return path
 
 
-def _consume_pending_command_probes(session: ClientSession) -> None:
-    if not session.pending_command_probes:
-        return
-    for key, command in list(session.pending_command_probes.items()):
-        status = session.env.pop(key, None)
-        session.public_env.pop(key, None)
-        if status == "0":
-            session.unsupported_cmds.discard(command)
-            session.supported_cmds.add(command)
-        elif status is not None:
-            session.supported_cmds.discard(command)
-            session.unsupported_cmds.add(command)
-    session.pending_command_probes.clear()
+def _consume_pending_framework_returns(session: ClientSession, parsed: ParsedPath) -> set[str]:
+    if not session.pending_framework_returns:
+        return set()
+    consumed: set[str] = set()
+    cleanup_vars: list[str] = []
+    for wire_key, binding in tuple(session.pending_framework_returns.items()):
+        value = parsed.values.get(wire_key)
+        if value is None:
+            continue
+        consumed.add(wire_key)
+        if binding.logical_key is not None:
+            session.env[binding.logical_key] = value
+            if binding.public:
+                session.public_env[binding.logical_key] = value
+        if binding.kind == "probe" and binding.command is not None:
+            if value == "0":
+                session.unsupported_cmds.discard(binding.command)
+                session.supported_cmds.add(binding.command)
+            else:
+                session.supported_cmds.discard(binding.command)
+                session.unsupported_cmds.add(binding.command)
+        if binding.clear_source:
+            cleanup_vars.append(binding.source_key)
+    session.pending_framework_returns.clear()
+    for name in cleanup_vars:
+        if name not in session.pending_cleanup_vars:
+            session.pending_cleanup_vars.append(name)
+    return consumed
 
 
 def _consume_exec_status(session: ClientSession) -> object:
-    key = session.pending_exec_status_key
-    if key is None:
+    if session.pending_exec_result_default is not None:
+        value = session.pending_exec_result_default
+        session.pending_exec_result_default = None
+        return value
+    status = session.env.pop(_EXEC_STATUS_LOGICAL_KEY, None)
+    session.public_env.pop(_EXEC_STATUS_LOGICAL_KEY, None)
+    if status is None:
         return _NO_EXEC_RESULT
-    session.pending_exec_status_key = None
-    if key == "":
-        return True
-    status = session.env.pop(key, None)
-    session.public_env.pop(key, None)
     return status == "1"
 
 
@@ -801,33 +963,41 @@ def _apply_required_command_guards(
     session: ClientSession,
     script: str,
     required_cmds: tuple[str, ...],
-    return_keys: tuple[str, ...],
+    returns: _ReturnBindings,
     *,
     failure_script: str | None = None,
     on_failure_script: str | None = None,
-) -> tuple[str, tuple[str, ...]]:
+) -> tuple[str, _ReturnBindings]:
     if not required_cmds:
-        session.pending_command_probes.clear()
-        return script, return_keys
+        return script, returns
 
     missing, probe_commands = _plan_required_commands(session, required_cmds)
 
     if missing:
-        session.pending_command_probes.clear()
         return _join_script_lines(
             (on_failure_script, *_required_command_error_lines(missing), failure_script)
-        ), return_keys
+        ), returns
 
     if not probe_commands:
-        session.pending_command_probes.clear()
-        return script, return_keys
+        return script, returns
 
+    probe_returns = tuple(
+        _new_return_binding(
+            session,
+            logical_key=None,
+            source_key=f"_c{index}",
+            public=False,
+            kind="probe",
+            command=command,
+        )
+        for index, command in enumerate(probe_commands)
+    )
     probe_lines, probe_keys, key_map = build_probe_batch(
         probe_commands,
         session.env,
-        key_prefix="_c",
+        keys=[binding.capture() for binding in probe_returns],
     )
-    session.pending_command_probes = {key: command for command, key in key_map.items()}
+    returns = returns.with_managed(*probe_returns)
     ok_var = _new_tmp_name("cmds_ok")
     checks = [f"setenv {ok_var} 1"]
     for key in probe_keys:
@@ -845,7 +1015,7 @@ def _apply_required_command_guards(
             f"setenv {ok_var}",
         )
     )
-    return wrapped, return_keys + tuple(probe_keys)
+    return wrapped, returns
 
 
 def _plan_required_commands(
@@ -906,6 +1076,8 @@ def _indent_script(script: str | None) -> str:
 
 
 _NO_EXEC_RESULT = object()
+_EXEC_STATUS_LOGICAL_KEY = "__exec_status"
+_SCRIPT_TMP_COUNTER = itertools.count(0)
 
 
 def _receive_address(
@@ -929,6 +1101,74 @@ def _format_uboot_number(value: int | str) -> str:
     return value
 
 
+def _reset_per_instruction_allocators(session: ClientSession) -> None:
+    global _SCRIPT_TMP_COUNTER
+    _SCRIPT_TMP_COUNTER = itertools.count(0)
+    session.framework_return_index = 0
+    reset_script_snippet_tmp_counter()
+
+
+def _new_tmp_name(kind: str) -> str:
+    _ = kind
+    return f"t{next(_SCRIPT_TMP_COUNTER)}"
+
+
+def _new_return_binding(
+    session: ClientSession,
+    logical_key: str | None = None,
+    *,
+    source_key: str | None = None,
+    public: bool = False,
+    clear_source: bool = True,
+    kind: str = "value",
+    command: str | None = None,
+) -> ReturnBinding:
+    if source_key is None:
+        source_key = f"_r{session.framework_return_index}"
+        session.framework_return_index += 1
+    return ReturnBinding(
+        session=session,
+        source_key=source_key,
+        logical_key=logical_key,
+        public=public,
+        clear_source=clear_source,
+        kind=kind,
+        command=command,
+    )
+
+
+def _assign_framework_returns(
+    returns: _ReturnBindings,
+) -> dict[str, PendingFrameworkReturn]:
+    reserved = set(returns.keys)
+    assigned: dict[str, PendingFrameworkReturn] = {}
+    index = 0
+    for binding in returns.managed:
+        while True:
+            wire_key = f"_{index}"
+            index += 1
+            if wire_key not in reserved:
+                break
+        assigned[wire_key] = PendingFrameworkReturn(
+            wire_key=wire_key,
+            source_key=binding.source_key,
+            logical_key=binding.logical_key,
+            public=binding.public,
+            clear_source=binding.clear_source,
+            kind=binding.kind,  # type: ignore[arg-type]
+            command=binding.command,
+        )
+    return assigned
+
+
+def _queue_pending_cleanup(session: ClientSession) -> None:
+    if not session.pending_cleanup_vars:
+        return
+    cleanup = [f"setenv {name}" for name in session.pending_cleanup_vars]
+    session.pending_cleanup_vars.clear()
+    session.queued_scripts = [*cleanup, *session.queued_scripts]
+
+
 def _parse_uboot_number(value: str) -> int:
     text = value.strip()
     if text.lower().startswith("0x"):
@@ -947,10 +1187,6 @@ def _get_local_ip(peer_hint: str) -> str:
 
 def _new_token() -> str:
     return secrets.token_urlsafe(8)
-
-
-def _new_tmp_name(kind: str) -> str:
-    return f"__uboot_tftp_{kind}_{secrets.token_hex(4)}"
 
 
 def _format_session_log_entry(request: ContentRequest, script: str) -> str:

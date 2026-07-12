@@ -251,7 +251,7 @@ def test_initial_session_runs_hush_preflight_before_user_handler(tmp_path):
     assert "Executing preflight..." in preflight
     assert 'if true; then setenv hush_shell true; fi' in preflight
     assert 'setexpr.b _1 *${loadaddr}' in preflight
-    assert f'/hush_shell=${{hush_shell}}/_1=${{_1}}/loadaddr=${{loadaddr}}"' in preflight
+    assert f'/_0=${{hush_shell}}/_1=${{_1}}/_2=${{loadaddr}}"' in preflight
     assert "echo handler ran" not in preflight
 
     second = script_from_result(
@@ -379,6 +379,70 @@ def test_exec_can_request_return_keys_for_next_rrq(tmp_path):
     assert "echo filesize 1235" in second
 
 
+def test_exec_managed_returns_use_short_keys_and_support_typed_access(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    crc = tftp.bind('crc')",
+                "    await tftp.exec([f'setenv {crc.capture()} 0x2a'], returns=[crc])",
+                "    await tftp.exec([f'echo crc {crc.str()} {crc.int()} {tftp.env[\"crc\"]}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "setenv _r0 0x2a" in first
+    assert '/_0=${_r0}"' in first
+
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=0x2a")))
+    assert "setenv _r0" in second
+    assert "echo crc 0x2a 42 0x2a" in second
+
+
+def test_exec_can_mix_literal_keys_with_managed_returns(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    crc = tftp.bind('crc')",
+                "    await tftp.exec([f'setenv {crc.capture()} 0x10'], keys=['literal'], returns=[crc])",
+                "    await tftp.exec([f'echo values {env[\"literal\"]} {crc.int()}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert '/literal=${literal}/_0=${_r0}"' in first
+
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={token}/literal=ok/_0=0x10"))
+    )
+    assert "echo values ok 16" in second
+
+
 def test_exec_returns_true_without_requires(tmp_path):
     config = write_config(
         tmp_path,
@@ -404,7 +468,7 @@ def test_exec_returns_true_without_requires(tmp_path):
     token = token_match.group(1)
     assert "echo step1" in first
 
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=0")))
     assert "echo ok True" in second
 
 
@@ -434,7 +498,7 @@ def test_exec_queue_prepends_once_and_clears_on_exec(tmp_path):
     assert token_match is not None
     token = token_match.group(1)
 
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=0")))
     assert "echo queued1" not in second
     assert "echo queued2" not in second
     assert "echo next" in second
@@ -468,7 +532,7 @@ def test_exec_queue_merges_requires_into_next_exec(tmp_path):
     assert token_match is not None
     token = token_match.group(1)
 
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}")))
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=0")))
     assert "echo checked False" in second
 
 
@@ -722,13 +786,8 @@ def test_exec_recv_can_upload_from_relative_rambase_offset(tmp_path):
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
-    assert "setexpr __uboot_tftp_recv_" in first
-    assert " ${loadaddr} + 0x400" in first
-    recv_tmp = next(
-        line.split()[1]
-        for line in first.splitlines()
-        if line.startswith("setexpr __uboot_tftp_recv_")
-    )
+    assert "setexpr t0 ${loadaddr} + 0x400" in first
+    recv_tmp = "t0"
     assert (
         f'tftpput ${{{recv_tmp}}} 0x8 "127.0.0.1:id=cam123/token={token}/upload.bin"' in first
     )
@@ -875,7 +934,7 @@ def test_fetch_env_helper_exports_receives_and_parses_environment(tmp_path):
     assert token_match is not None
     token = token_match.group(1)
     assert f"env export -t ${{loadaddr}}" in first
-    assert f'/filesize=${{filesize}}"' in first
+    assert f'/_0=${{filesize}}"' in first
 
     second = script_from_result(
         provider.fetch(request(f"id=cam123/token={token}/filesize=1235"))
@@ -1295,13 +1354,8 @@ def test_exec_checked_returns_true_when_guarded_body_runs(tmp_path):
     assert token_match is not None
     token = token_match.group(1)
     assert "echo guarded" in first
-    status_key = next(
-        segment.split("=${", 1)[0].rsplit("/", 1)[-1]
-        for segment in first.split('"')
-        if "/__uboot_tftp_exec_status_" in segment
-    )
-
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/{status_key}=1")))
+    assert "/_0=${_s}" in first
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=1")))
     assert "echo checked True" in second
 
 
@@ -1329,13 +1383,8 @@ def test_exec_checked_returns_false_when_guarded_body_is_skipped(tmp_path):
     assert token_match is not None
     token = token_match.group(1)
     assert "echo guarded" not in first
-    status_key = next(
-        segment.split("=${", 1)[0].rsplit("/", 1)[-1]
-        for segment in first.split('"')
-        if "/__uboot_tftp_exec_status_" in segment
-    )
-
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/{status_key}=0")))
+    assert "/_0=${_s}" in first
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=0")))
     assert "echo checked False" in second
 
 
@@ -1388,7 +1437,7 @@ def test_exec_requires_skips_body_and_continues_on_missing_command(tmp_path):
     assert "sf probe 0" in first
     assert "echo guarded" in first
 
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_c0=1")))
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=0/_1=1")))
     assert "echo fallback" in second
 
 
@@ -1416,7 +1465,7 @@ def test_exec_requires_uses_cached_unsupported_result_without_reprobe(tmp_path):
     assert token_match is not None
     token = token_match.group(1)
 
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_c0=1")))
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/_0=0/_1=1")))
     assert "sf write ${loadaddr} 0x0 0x0" not in second
     assert "echo second" not in second
     assert "required commands unavailable: sf write" in second
@@ -1453,9 +1502,9 @@ def test_exec_recv_requires_uses_failure_continuation_for_missing_command(tmp_pa
     token = token_match.group(1)
     assert "tftpput ${loadaddr} 0x0 _null" in first
     assert "echo upload" in first
-    assert "/recv=failed/_c0=${_c0}" in first
+    assert "/recv=failed/_0=${_c0}" in first
 
-    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/recv=failed/_c0=1")))
+    second = script_from_result(provider.fetch(request(f"id=cam123/token={token}/recv=failed/_0=1")))
     assert "echo fallback" in second
     assert "echo unexpected" not in second
 

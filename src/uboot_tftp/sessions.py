@@ -21,6 +21,20 @@ class PendingReceive:
     uploaded: bytes | None = None
 
 
+FrameworkReturnKind = Literal["value", "probe", "exec_status"]
+
+
+@dataclass(frozen=True)
+class PendingFrameworkReturn:
+    wire_key: str
+    source_key: str
+    logical_key: str | None = None
+    public: bool = False
+    clear_source: bool = True
+    kind: FrameworkReturnKind = "value"
+    command: str | None = None
+
+
 @dataclass
 class ClientSession:
     client_id: str
@@ -41,11 +55,14 @@ class ClientSession:
     download_artifacts: set[str] = field(default_factory=set)
     supported_cmds: set[str] = field(default_factory=set)
     unsupported_cmds: set[str] = field(default_factory=set)
-    pending_command_probes: dict[str, str] = field(default_factory=dict)
-    pending_exec_status_key: str | None = None
+    pending_framework_returns: dict[str, PendingFrameworkReturn] = field(default_factory=dict)
+    pending_user_return_keys: set[str] = field(default_factory=set)
+    pending_cleanup_vars: list[str] = field(default_factory=list)
+    pending_exec_result_default: bool | None = None
     queued_scripts: list[str] = field(default_factory=list)
     queued_required_cmds: list[str] = field(default_factory=list)
     log_path: Path | None = None
+    framework_return_index: int = 0
 
     def record_rrq(self, parsed: ParsedPath) -> None:
         self.updated_at = time.time()

@@ -33,7 +33,7 @@ def test_probe_batch_uses_configured_rambase_variable():
 def test_setexpr_probe_captures_status_from_setexpr_itself():
     lines, keys, _ = build_probe_batch(["setexpr"], {"rambase": "loadaddr"})
     assert lines == [
-        "setexpr __uboot_tftp_probe 1 + 1",
+        f"setexpr {keys[0]} 1 + 1",
         f"setenv {keys[0]} $?",
     ]
 

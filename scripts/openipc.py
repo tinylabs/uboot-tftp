@@ -194,7 +194,7 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
             'run netinit',
             f'if tftpboot {tftp.rambase} '+'${serverip}:id=${hostname}/${cmd}/${args}',
             f'then source {tftp.rambase}',
-            'else echo "TFTP request failed: is TFTP server running?"',
+            'else echo "TFTP request failed: is TFTP server running @ ${serverip}?"',
             'fi'
         ]),
         'netinit'    : '; '.join ([
@@ -261,8 +261,9 @@ async def openipc_collect_install_context(
         tftp,
         max_size=tftp_env.get("nor_size", None),
         pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-        post_cmds=[uboot_msg("${size}")],
+        post_cmds=[uboot_msg("OK")],
     )
+
     if nor_size == 0:
         raise ValueError("NOR flash not detected! Aborting...")
 
@@ -712,16 +713,16 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 tftp,
                 max_size=tftp_env.get('nor_size', None),
                 pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-                post_cmds=[uboot_msg('${size}')],
-                final=True,
+                post_cmds=[uboot_msg('OK')],
             )
+            await tftp.exec(uboot_msg(f'nor size={sz}'), final=True)
 
         case 'backup':
             sz = await uboot_nor_probe(
                 tftp,
                 max_size=tftp_env.get('nor_size', None),
                 pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-                post_cmds=[uboot_msg('${size}')],
+                post_cmds=[uboot_msg('OK')],
             )
             filename = tftp_env.get ('filename', '')
             await openipc_nor_backup(tftp, sz, filename, final=True)            

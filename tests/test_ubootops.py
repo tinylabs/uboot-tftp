@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from types import SimpleNamespace
 
 from uboot_tftp.ubootops import (
     uboot_boot,
@@ -15,31 +16,61 @@ class FakeHandle:
         self.rambase = "${loadaddr}"
         self.is_le = True
         self.env = {} if env is None else dict(env)
+        self.session = SimpleNamespace(env=self.env)
         self.exec_calls = []
         self.exec_recv_calls = []
 
-    async def exec(self, script, *, final=False, keys=(), requires=()):
+    async def exec(self, script, *, final=False, keys=(), returns=(), requires=()):
         self.exec_calls.append(
             {
                 "script": list(script),
                 "final": final,
                 "keys": list(keys),
+                "returns": list(returns),
                 "requires": list(requires),
             }
         )
 
-    async def exec_recv(self, script, size, *, final=False, keys=(), offset=None, requires=()):
+    async def exec_recv(
+        self,
+        script,
+        size,
+        *,
+        final=False,
+        keys=(),
+        returns=(),
+        offset=None,
+        requires=(),
+    ):
         self.exec_recv_calls.append(
             {
                 "script": list(script),
                 "size": size,
                 "final": final,
                 "keys": list(keys),
+                "returns": list(returns),
                 "offset": offset,
                 "requires": list(requires),
             }
         )
         return b"payload"
+
+    def bind(
+        self,
+        logical_key,
+        *,
+        source_key=None,
+        public=False,
+    ):
+        return SimpleNamespace(
+            _env=self.env,
+            logical_key=logical_key,
+            source_key=source_key,
+            public=public,
+            capture=lambda: source_key,
+            str=lambda: self.env[logical_key],
+            int=lambda: int(self.env[logical_key], 0),
+        )
 
 
 def test_uboot_nor_download_builds_script_around_core_nor_commands():
@@ -65,7 +96,7 @@ def test_uboot_nor_download_builds_script_around_core_nor_commands():
 
 
 def test_uboot_nor_probe_returns_zero_when_sf_probe_fails():
-    handle = FakeHandle(env={"status": "1"})
+    handle = FakeHandle(env={"__nor_probe_status": "1", "__nor_probe_size": "0"})
 
     result = asyncio.run(
         uboot_nor_probe(
@@ -77,11 +108,16 @@ def test_uboot_nor_probe_returns_zero_when_sf_probe_fails():
 
     assert result == 0
     assert len(handle.exec_calls) == 1
-    assert handle.exec_calls[0]["script"][0] == "echo before"
+    call = handle.exec_calls[0]
+    assert call["script"][0] == "echo before"
+    assert call["returns"][0].logical_key == "__nor_probe_status"
+    assert call["returns"][1].logical_key == "__nor_probe_size"
+    assert "sf probe 0" in call["script"]
+    assert any("setenv _r1 0" in line for line in call["script"])
 
 
 def test_uboot_nor_probe_runs_recursive_probe_and_parses_hex_size():
-    handle = FakeHandle(env={"status": "0", "size": "0x1000000"})
+    handle = FakeHandle(env={"__nor_probe_status": "0", "__nor_probe_size": "0x1000000"})
 
     result = asyncio.run(
         uboot_nor_probe(
@@ -94,14 +130,14 @@ def test_uboot_nor_probe_runs_recursive_probe_and_parses_hex_size():
     )
 
     assert result == 0x1000000
-    assert len(handle.exec_calls) == 2
-    first, second = handle.exec_calls
-    assert first["keys"] == ["status"]
-    assert first["script"][0] == "echo before"
-    assert second["keys"] == ["size"]
-    assert second["final"] is True
-    assert second["script"][-1] == "echo after"
-    assert any("sf read" in line for line in second["script"])
+    assert len(handle.exec_calls) == 1
+    call = handle.exec_calls[0]
+    assert call["returns"][0].logical_key == "__nor_probe_status"
+    assert call["returns"][1].logical_key == "__nor_probe_size"
+    assert call["script"][0] == "echo before"
+    assert call["final"] is True
+    assert call["script"][-2] == "    echo after"
+    assert any("sf read" in line for line in call["script"])
 
 
 def test_uboot_exec_delay_shows_intro_then_runs_commands():
@@ -138,6 +174,7 @@ def test_uboot_exec_delay_runs_commands_immediately_for_zero_seconds():
             "script": ["boot"],
             "final": True,
             "keys": [],
+            "returns": [],
             "requires": [],
         }
     ]
@@ -174,7 +211,7 @@ def test_uboot_crc32_builds_script_and_decodes_little_endian_words():
     call = handle.exec_calls[0]
     assert call["script"][0] == "echo before"
     assert call["script"][-1] == "echo after"
-    assert call["keys"] == ["c0", "c1"]
+    assert [ret.logical_key for ret in call["returns"]] == ["c0", "c1"]
     assert call["final"] is True
     assert any("crc32 0x42000000 0x1000" in line for line in call["script"])
     assert any("crc32 0x43000000 0x2000" in line for line in call["script"])
