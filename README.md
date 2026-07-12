@@ -3,8 +3,8 @@
 This project is still a work in progress. Expect the API, example scripts, and operational details to change while the design is still settling; it should not be considered stable yet.
 
 TODO:
-- [x] Use u-boot from latest tag if selected tag doesn't contain it on install.
-- [ ] Set mtdparts uboot env variable based on flash size.
+- [x] openipc: Use u-boot from latest tag if selected tag doesn't contain it on install.
+- [ ] openipc: Set mtdparts uboot env variable based on flash size.
 - [x] probe available commands in preflight.
   - [x] Verify commands dynamically when running with cache.
 - [ ] Add internal handling of `bootstrap` and `bootstrap_onboot` tftp commands.
@@ -89,39 +89,37 @@ If you would rather avoid changing the sysctl, run the server with `sudo` or con
 Below is the terminal output showing openipc install using the server from a networked camera.
 
 ```
-Executing preflight...
+Executing preflight... OK
 Fetching current uboot environment... OK
-Probing NOR flash... 0x1000000
+Probing NOR flash... OK
 Downloading github/OpenIPC/firmware/releases/tags/latest.json: 750.6 kB
 Downloading OpenIPC/firmware/releases/tags/latest/gk7205v300/u-boot-gk7205v300-universal.bin: 250.2 kB
 Downloading OpenIPC/firmware/releases/tags/latest/gk7205v300/openipc.gk7205v300-nor-lite.tgz: 6867.5 kB
 Copying NOR flash to RAM... OK
 Partition update plan:
 uboot    0x00000000 size=0x00040000 src=u-boot-gk7205v300-universal.bin  flash=0xb7094978 payload=0x81686d05 update
-env      0x00040000 size=0x00010000 src=cam-final-env.bin                flash=0xdeab7e4e payload=0xce3fd098 update
-kernel   0x00050000 size=0x00300000 src=openipc.gk7205v300-nor-lite.tgz  flash=0xaeecf75a payload=0xfcdeff25 update
-rootfs   0x00350000 size=0x00a00000 src=openipc.gk7205v300-nor-lite.tgz  flash=0xdb3bf1c2 payload=0x287307ad update
-Uploading cam-final-uboot-u-boot-gk7205v300-universal.bin... OK
+env      0x00040000 size=0x00010000 src=cam-final-env.bin                flash=0xdeab7e4e payload=0x22f7eb0a update
+kernel   0x00050000 size=0x00300000 src=uImage.gk7205v300                flash=0xaeecf75a payload=0xfcdeff25 update
+rootfs   0x00350000 size=0x00a00000 src=rootfs.squashfs.gk7205v300       flash=0xdb3bf1c2 payload=0x287307ad update
+Uploading u-boot-gk7205v300-universal.bin... OK
 Erasing uboot... OK
 Writing uboot... OK
-Uploading cam-final-env-cam-final-env.bin... OK
+Uploading cam-final-env.bin... OK
 Erasing env... OK
 Writing env... OK
-Uploading cam-final-kernel-openipc.gk7205v300-nor-lite.tgz... OK
+Uploading uImage.gk7205v300... OK
 Erasing kernel... OK
 Writing kernel... OK
-Uploading cam-final-rootfs-openipc.gk7205v300-nor-lite.tgz... OK
+Uploading rootfs.squashfs.gk7205v300... OK
 Erasing rootfs... OK
 Writing rootfs... OK
 
 Install finished for cam-final
 Updated partitions: uboot, env, kernel, rootfs
 
-
-Vendor ETH net controler
 Rebooting in 10 seconds
 Enter Ctrl+C to cancel...
-[#         ]
+[##        ]
 ```
 
 ## Session Model
