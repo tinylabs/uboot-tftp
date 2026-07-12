@@ -19,10 +19,6 @@ from .ubootterm import uboot_err, uboot_msg, uboot_progress, uboot_status, uboot
 LOGGER = logging.getLogger(__name__)
 
 
-def _rewrite_var_refs(cmds: Iterable[str], old: str, new: str) -> list[str]:
-    return [str(cmd).replace(f"${{{old}}}", f"${{{new}}}") for cmd in cmds]
-
-
 def _download_progress_lines(artifact) -> str:
     kib = artifact.bytes_done / 1024
     script = [uboot_status(f"{kib:.1f} kB")]
@@ -117,7 +113,7 @@ async def uboot_nor_probe(
             requires=requires,
             result_var=size_return.capture(),
         ),
-        *_rewrite_var_refs(_normalize_cmds(post_cmds), "__nor_probe_size", size_return.capture()),
+        *_normalize_cmds(post_cmds),
     ]
     await tftp.exec(
         [

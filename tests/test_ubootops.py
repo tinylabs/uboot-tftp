@@ -136,7 +136,9 @@ def test_uboot_nor_probe_runs_recursive_probe_and_parses_hex_size():
     assert call["returns"][1].logical_key == "__nor_probe_size"
     assert call["script"][0] == "echo before"
     assert call["final"] is True
-    assert call["script"][-2] == "    echo after"
+    assert "    echo after" in call["script"]
+    assert any("setenv _r1 " in line for line in call["script"])
+    assert not any(line.strip() == "setenv size" for line in call["script"])
     assert any("sf read" in line for line in call["script"])
 
 
