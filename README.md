@@ -25,7 +25,7 @@ TODO:
 
 # uboot-tftp
 
-Session-aware TFTP server for OpenIPC and U-Boot style workflows. In addition to standard TFTP get/put operations it can
+Session-aware TFTP server for U-Boot style workflows. In addition to standard TFTP get/put operations it can
 act as a remote command and control server to implement advanced logic from a user supplied python script. The operations
 include python wrappers for calling builtin u-boot cmds, downloading repo assets from github and more. The python logic is
 synchronous so different operations can be performed based on the result of previous operations.
@@ -160,7 +160,9 @@ If the upload fails and the client returns on the failure continuation path, `ex
 
 ## Config
 
-Example [`config.toml`](config/openipc.toml):
+Minimal Example [`config.toml`](src/uboot_tftp/openipc.toml):
+
+Here's a more advanced config.toml showing inheritance of env variables and target specific entry points.
 
 ```toml
 [server]
@@ -177,18 +179,20 @@ log_level = "info"
 rambase = "baseaddr"
 cmdtftp = "tftpboot"
 cmdtftpput = "tftpput"
-# These are arbitrary user defined and will be passed to the env dict
+# These are global arbitrary user defined and will be passed to the env dict
 # to be used in the user script
 nfsserver = '10.0.70.220'
 rootfs = '/mnt/STORAGE/config/camera/boot/rootfs'
 kernel = 'uImage.generic'
 
+# Only triggered if id=cam123 in initial RRQ filename.
 [cam123]
 entry_func = "cam123_entry"
 # Target specific entries will override global env above
 rootfs = '/mnt/STORAGE/config/camera/boot/rootfs.${hostname}'
 kernel = 'uImage.${soc}'
 
+# Triggered for all cases when id= doesn't match any other sections.
 [default]
 # This will get called if a matching 'id=' entry isn't found.
 entry_func = "default"
