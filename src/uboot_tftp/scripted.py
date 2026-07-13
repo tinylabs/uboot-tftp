@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import inspect
 import json
@@ -407,6 +408,7 @@ class ScriptedSessionProvider(DynamicContentProvider):
         self.upload_store = upload_store or InMemoryUploadStore(self.sessions)
         self.compiler = compiler or LegacyScriptImageCompiler()
         self._module = _load_script_module(config.script_path)
+        self._tools_module = importlib.import_module("uboot_tftp.tools")
         self.static_root = config.static_root
         self.static_root.mkdir(parents=True, exist_ok=True)
         self.session_log_dir = (
@@ -498,25 +500,36 @@ class ScriptedSessionProvider(DynamicContentProvider):
         request: ContentRequest,
     ):
         initial_request = session.requests[0]
-        route = self._route_for(session.client_id)
         handle = SessionHandle(
             provider=self,
             session=session,
             parsed=initial_request,
             request=request,
         )
-        function = getattr(self._module, route.entry_func, None)
+        command = _command_from_segments(initial_request.segments)
+        module, entry_func = self._select_handler(initial_request, command)
+        function = getattr(module, entry_func, None)
         if not callable(function):
-            raise ValueError(f"script function not found: {route.entry_func}")
+            raise ValueError(f"script function not found: {entry_func}")
         handler = function(
             handle,
             session.client_id,
-            _command_from_segments(initial_request.segments),
+            command,
             session.public_env,
         )
         if not inspect.iscoroutine(handler):
             raise TypeError("session handlers must be async functions")
         return handler
+
+    def _select_handler(
+        self,
+        initial_request: ParsedPath,
+        command: str,
+    ) -> tuple[ModuleType, str]:
+        if command.startswith("@"):
+            return self._tools_module, "default"
+        route = self._route_for(initial_request.client_id)
+        return self._module, route.entry_func
 
     def _preflight_result(self, session: ClientSession, request: ContentRequest) -> ContentResult:
         session.current_token = _new_token()
