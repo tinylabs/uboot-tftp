@@ -30,7 +30,9 @@ INTERNAL_VARS = {
             f'if tftpboot <rambase> ${{serverip}}:id=${{id}}/${{cmd}}/${{args}}',
             f'then source <rambase>',
             'else echo "TFTP request failed: is TFTP server running @ ${serverip}?"',
-            'fi']),
+            'fi',
+            'false',
+        ]),
         'help' : [
             'Start dynamic session from uboot on this device',
             '`cmd=<cmd>; args=key1=arg1/key2=arg2; run session`',
@@ -48,6 +50,43 @@ INTERNAL_VARS = {
             'Initialize networking based on env variable `ipmode`.'
         ],
     },
+    'onboot' : {
+        'var' : '; '.join ([
+            'cmd=onboot',
+            'if run session',
+            'then echo ""',
+            'echo "Booting default..."',
+            'run bootdefault',
+            'fi',
+        ]),
+        'help' : [
+        ],
+    },
+    'persist' : {
+        'var' : '; '.join ([
+            'if test -n "${bootdefault}"',
+            'then echo "bootdefault already set!"',
+            'else setenv bootdefault ${bootcmd}',
+            'echo "Copying bootcmd to bootdefault"',
+            'fi',
+            "setenv bootcmd 'run onboot'",
+            'saveenv',
+            'echo "Installed persistance"',
+            'echo "Run `reset` to test"',
+        ]),
+        'help' : [
+        ],
+    },
+    'unpersist' : {
+        'var' : '; '.join ([
+            'setenv bootcmd ${bootdefault}',
+            'setenv bootdefault',
+            'saveenv',
+            'echo "Uninstalled persistance"',
+        ]),
+        'help' : [
+        ],
+    }
 }
 
 
