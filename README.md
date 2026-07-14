@@ -7,17 +7,17 @@ TODO:
 - [ ] openipc: Set mtdparts uboot env variable based on flash size.
 - [x] probe available commands in preflight.
   - [x] Verify commands dynamically when running with cache.
-- [ ] Add internal handling of `bootstrap` and `bootstrap_onboot` tftp commands.
-  - [ ] Install the `netinit` and `bootstrap` commands when found.
-  - [ ] `bootstrap_onboot` should inject itself into bootcmd with a failover for normal boot when tftp times out.
-  - [ ] `unbootstrap` to revert (as a baked in command, not dependent on tftp server running).
-  - [ ] Save passed id to use on future bootstrap calls.
-  - [ ] Save list of discovered commands/properties to minimize preflight calls.
-  - [ ] Use unique namespace prefix for saved commands.
+- [ ] Add internal handling of special commands.
+  - [x] Install the `netinit` and `session` commands when found.
+  - [x] `persist` should inject itself into bootcmd with a failover for normal boot if tftp times out.
+  - [x] `unpersist` to revert (as a baked in command, not dependent on tftp server running).
+  - [x] Save passed id to use on future bootstrap calls.
+  - [ ] ~~Save list of discovered commands/properties to minimize preflight calls.~~
+  - [ ] ~~Use unique namespace prefix for saved commands.~~~
   - [ ] echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
   - [ ] Hosted locally only via python fastapi.
-- [ ] Add script logging per session.
-- [ ] Generate FIT image with recorded scripts and orchestrator.
+- [x] Add script logging per session.
+- [ ] ~~Generate FIT image with recorded scripts and orchestrator.~~
 - [x] Add tftp.exec_queue() for non-blocking functions. ie: echo, etc
   - [x] Queue commands until exec happens. Flush commands on completion.
 - [x] Fix filename on extracted kernel/rootfs.
