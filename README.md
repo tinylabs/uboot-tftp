@@ -9,11 +9,11 @@ TODO:
   - [x] Verify commands dynamically when running with cache.
 - [ ] Add internal handling of special commands.
   - [x] Install the `netinit` and `session` commands when found.
-  - [ ] `persist` should inject itself into bootcmd with a failover for normal boot if tftp times out.
-  - [ ] `unpersist` to revert (as a baked in command, not dependent on tftp server running).
+  - [x] `persist` should inject itself into bootcmd with a failover for normal boot if tftp times out.
+  - [x] `unpersist` to revert (as a baked in command, not dependent on tftp server running).
   - [x] Save passed id to use on future bootstrap calls.
   - [ ] ~~Save list of discovered commands/properties to minimize preflight calls.~~
-  - [ ] Use unique namespace prefix for saved commands.
+  - [ ] ~~Use unique namespace prefix for saved commands.~~~
   - [ ] echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
   - [ ] Hosted locally only via python fastapi.
 - [x] Add script logging per session.
