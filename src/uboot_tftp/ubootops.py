@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
+from .scripted import ENV_EXPORT_RAM_OFFSET
 from .ubootscript import (
     uboot_crc32_gen,
     uboot_memset,
@@ -83,11 +84,24 @@ async def uboot_nor_download(
     requires=[]
     script = [
         *_normalize_cmds(pre_cmds),
-        uboot_memset(tftp, offset=0, size=size, value=0xFF, requires=requires),
-        uboot_nor_read(tftp, ram_offset=0, nor_offset=0, size=size, requires=requires),
+        uboot_memset(
+            tftp, offset=ENV_EXPORT_RAM_OFFSET, size=size, value=0xFF, requires=requires
+        ),
+        uboot_nor_read(
+            tftp,
+            ram_offset=ENV_EXPORT_RAM_OFFSET,
+            nor_offset=0,
+            size=size,
+            requires=requires,
+        ),
         *_normalize_cmds(post_cmds),
     ]
-    return await tftp.exec_recv(script=script, size=size, requires=requires)
+    return await tftp.exec_recv(
+        script=script,
+        size=size,
+        offset=ENV_EXPORT_RAM_OFFSET,
+        requires=requires,
+    )
         
 
 
@@ -154,7 +168,10 @@ async def uboot_exec_delay(
         if step == 0:
             await tftp.exec([*intro, uboot_progress(step, width, color='white')])
         else:
-            await tftp.exec([uboot_progress(step, width, color='white')])
+            await tftp.exec([
+                uboot_progress(step, width, color='white'),
+                'sleep 1'
+            ])
     await tftp.exec([*_normalize_cmds(cmds)], final=final)
 
 

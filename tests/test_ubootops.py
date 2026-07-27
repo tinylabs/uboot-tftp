@@ -9,6 +9,7 @@ from uboot_tftp.ubootops import (
     uboot_nor_download,
     uboot_nor_probe,
 )
+from uboot_tftp.scripted import ENV_EXPORT_RAM_OFFSET
 
 
 class FakeHandle:
@@ -90,9 +91,12 @@ def test_uboot_nor_download_builds_script_around_core_nor_commands():
     assert len(handle.exec_recv_calls) == 1
     call = handle.exec_recv_calls[0]
     assert call["size"] == 0x2000
+    assert call["offset"] == ENV_EXPORT_RAM_OFFSET
     assert call["script"][0] == "echo before"
     assert "mw.b" in call["script"][1]
     assert "sf read" in call["script"][2]
+    assert "+ 0x10000" in call["script"][1]
+    assert "+ 0x10000" in call["script"][2]
     assert call["script"][3] == "echo after"
 
 

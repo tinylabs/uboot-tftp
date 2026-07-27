@@ -70,6 +70,15 @@ def test_uboot_msg_quotes_shell_control_characters_inside_message():
     )
 
 
+def test_uboot_msg_keeps_environment_syntax_literal():
+    message = uboot_msg('if test "${ipmode... $netdone `command` \\')
+
+    assert '\\${ipmode...' in message
+    assert '\\$netdone' in message
+    assert '\\`command\\`' in message
+    assert '\\\\' in message
+
+
 def test_uboot_err_defaults_to_bold_red_message():
     assert (
         uboot_err("boom")

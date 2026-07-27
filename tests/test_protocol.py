@@ -27,6 +27,15 @@ def test_parse_root_request_path():
     assert parsed.path == "/"
 
 
+def test_parse_session_request_path_allows_at_command_segment():
+    parsed = parse_request_path("id=cam123/@probe/mode=fast")
+
+    assert parsed.client_id == "cam123"
+    assert parsed.segments[0] == "@probe"
+    assert parsed.path == "/@probe/mode=fast"
+    assert parsed.values == {"mode": "fast"}
+
+
 def test_parse_rejects_invalid_client_id():
     with pytest.raises(ValueError, match="invalid client id"):
         parse_request_path("id=cam.123/bootstrap")

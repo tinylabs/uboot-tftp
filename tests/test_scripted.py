@@ -93,6 +93,31 @@ def test_scripted_provider_routes_by_client_id_and_passes_path(tmp_path):
     assert "echo default other123 boot" in start_session_script(provider, "id=other123/boot")
 
 
+def test_special_at_commands_use_builtin_tools_default(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec([f'echo user handler {cmd}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec([f'echo user default {cmd}'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    script = start_session_script(provider, "id=cam123/@definitely-missing")
+
+    assert "Command \\`@definitely-missing\\` not found." in script
+    assert "echo user handler" not in script
+    assert "echo user default" not in script
+
+
 def test_scripted_provider_serves_static_file_for_bare_rrq(tmp_path):
     config = write_config(
         tmp_path,
@@ -504,6 +529,39 @@ def test_exec_queue_prepends_once_and_clears_on_exec(tmp_path):
     assert "echo next" in second
 
 
+def test_exec_queue_can_be_flushed_in_a_standalone_continuation(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    tftp.exec_queue(['echo queued'])",
+                "    await tftp.exec([])",
+                "    await tftp.exec(['echo next'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    provider = ScriptedSessionProvider(
+        config, sessions=sessions, upload_store=InMemoryUploadStore(sessions)
+    )
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    assert "echo queued" in first
+    assert "echo next" not in first
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={token_match.group(1)}"))
+    )
+    assert "echo queued" not in second
+    assert "echo next" in second
+
+
 def test_exec_queue_merges_requires_into_next_exec(tmp_path):
     config = write_config(
         tmp_path,
@@ -665,7 +723,8 @@ def test_target_route_overrides_transport_env_for_new_session(tmp_path):
     next_token_match = TOKEN_RE.search(second)
     assert next_token_match is not None
     next_token = next_token_match.group(1)
-    assert f'nmrp ${{loadaddr}} 0x8 "127.0.0.1:id=cam123/token={next_token}/upload.bin"' in second
+    assert "setexpr t0 ${loadaddr} + 0x10000" in second
+    assert f'nmrp ${{t0}} 0x8 "127.0.0.1:id=cam123/token={next_token}/upload.bin"' in second
 
 
 def test_exec_recv_returns_uploaded_bytes_on_followup_rrq(tmp_path):
@@ -693,7 +752,8 @@ def test_exec_recv_returns_uploaded_bytes_on_followup_rrq(tmp_path):
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
-    assert f'tftpput ${{loadaddr}} 0x8 "127.0.0.1:id=cam123/token={token}/upload.bin"' in first
+    assert "setexpr t0 ${loadaddr} + 0x10000" in first
+    assert f'tftpput ${{t0}} 0x8 "127.0.0.1:id=cam123/token={token}/upload.bin"' in first
     assert (
         f'tftpboot ${{loadaddr}} '
         f'"127.0.0.1:id=cam123/token={token}/recv=ok/filesize=${{filesize}}"' in first
@@ -918,7 +978,9 @@ def test_fetch_env_helper_exports_receives_and_parses_environment(tmp_path):
             (
                 "async def handler(tftp, ident, cmd, env):",
                 "    exported = await tftp.fetch_env()",
-                "    await tftp.exec([f'echo ethaddr {exported[\"ethaddr\"]} {env[\"filesize\"]}'], final=True)",
+                "    await tftp.exec([",
+                "        f'echo exported {exported[\"arch\"]} {exported[\"bootcmd\"]} {exported[\"ethaddr\"]} {env[\"filesize\"]}'",
+                "    ], final=True)",
                 "",
                 "async def default(tftp, ident, cmd, env):",
                 "    await tftp.exec(['echo default'], final=True)",
@@ -933,17 +995,18 @@ def test_fetch_env_helper_exports_receives_and_parses_environment(tmp_path):
     token_match = TOKEN_RE.search(first)
     assert token_match is not None
     token = token_match.group(1)
-    assert f"env export -t ${{loadaddr}}" in first
+    assert "setexpr t0 ${loadaddr} + 0x10000" in first
+    assert "env export -t ${t0}" in first
     assert f'/_0=${{filesize}}"' in first
 
     second = script_from_result(
-        provider.fetch(request(f"id=cam123/token={token}/filesize=1235"))
+        provider.fetch(request(f"id=cam123/token={token}/filesize=69D"))
     )
     second_token_match = TOKEN_RE.search(second)
     assert second_token_match is not None
     second_token = second_token_match.group(1)
     assert (
-        f'tftpput ${{loadaddr}} 0x1235 "127.0.0.1:id=cam123/token={second_token}/upload.bin"'
+        f'tftpput ${{t0}} 0x69d "127.0.0.1:id=cam123/token={second_token}/upload.bin"'
         in second
     )
 
@@ -954,13 +1017,71 @@ def test_fetch_env_helper_exports_receives_and_parses_environment(tmp_path):
             server_addr=("127.0.0.1", 6969),
         )
     )
-    upload.write(b"ethaddr=00:11:22:33:44:55\x00")
+    exported = (
+        b"arch=sandbox\x00"
+        b"bootcmd=bootflow scan -lb\x00"
+        b"ethaddr=00:11:22:33:44:55\x00"
+    )
+    upload.write(exported + b"\x00" * (0x69D - len(exported)))
     upload.close()
 
     third = script_from_result(
         provider.fetch(request(f"id=cam123/token={second_token}/recv=ok"))
     )
-    assert "echo ethaddr 00:11:22:33:44:55 1235" in third
+    assert "echo exported sandbox bootflow scan -lb 00:11:22:33:44:55 69D" in third
+
+
+def test_fetch_env_helper_can_export_and_upload_from_a_rambase_offset(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    exported = await tftp.fetch_env(offset=0x400)",
+                "    await tftp.exec([f'echo arch {exported[\"arch\"]}'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo default'], final=True)",
+            )
+        ),
+    )
+    sessions = InMemorySessionStore()
+    uploads = InMemoryUploadStore(sessions)
+    provider = ScriptedSessionProvider(config, sessions=sessions, upload_store=uploads)
+
+    first = start_session_script(provider, "id=cam123/bootstrap")
+    token_match = TOKEN_RE.search(first)
+    assert token_match is not None
+    token = token_match.group(1)
+    assert "setexpr t0 ${loadaddr} + 0x400" in first
+    assert "env export -t ${t0}" in first
+
+    second = script_from_result(
+        provider.fetch(request(f"id=cam123/token={token}/filesize=10"))
+    )
+    second_token_match = TOKEN_RE.search(second)
+    assert second_token_match is not None
+    second_token = second_token_match.group(1)
+    assert "setexpr t0 ${loadaddr} + 0x400" in second
+    assert (
+        f'tftpput ${{t0}} 0x10 "127.0.0.1:id=cam123/token={second_token}/upload.bin"'
+        in second
+    )
+
+    upload = uploads.open(
+        UploadRequest(
+            filename=f"id=cam123/token={second_token}/upload.bin",
+            peer=("127.0.0.1", 12345),
+            server_addr=("127.0.0.1", 6969),
+        )
+    )
+    upload.write(b"arch=sandbox\x00" + b"\x00" * 3)
+    upload.close()
+
+    third = script_from_result(
+        provider.fetch(request(f"id=cam123/token={second_token}/recv=ok"))
+    )
+    assert "echo arch sandbox" in third
 
 
 def test_session_handle_can_acquire_and_poll_shared_download_artifact(tmp_path):
@@ -1544,7 +1665,7 @@ def test_session_logging_writes_request_and_script_blocks(tmp_path):
     assert "filename: id=cam123/bootstrap" in payload
     assert "filename: id=cam123/token=" in payload
     assert 'echo "<clear>OK"' in payload
-    assert 'echo "<clear>Executing preflight..."' in payload
+    assert 'Executing preflight...' in payload
     assert 'echo "step1"' in payload
     assert 'SCRIPT\necho "step2"' in payload
     assert "\x1b" not in payload

@@ -37,6 +37,8 @@ from .ubootenv import ubootenv_parse_export
 from .ubootscript import reset_tmp_counter as reset_script_snippet_tmp_counter
 from .uploads import InMemoryUploadStore
 
+ENV_EXPORT_RAM_OFFSET = 64 * 2**10
+
 
 class ReceiveFailedError(RuntimeError):
     """Raised into the user handler when a requested WRQ was not received."""
@@ -192,7 +194,7 @@ class SessionHandle:
         final: bool = False,
         keys: Iterable[str] = (),
         returns: Iterable[ReturnBinding] = (),
-        offset: int | str | None = None,
+        offset: int | str | None = ENV_EXPORT_RAM_OFFSET,
         requires: Iterable[str] = (),
     ) -> bytes:
         if final:
@@ -324,10 +326,28 @@ class SessionHandle:
         export_script: str | Iterable[str] | None = None,
         upload_script: str | Iterable[str] = ("echo uploading environment snapshot",),
         size_key: str = "filesize",
+        offset: int | str | None = ENV_EXPORT_RAM_OFFSET,
     ) -> dict[str, str]:
-        export_lines = (
-            export_script if export_script is not None else [f"env export -t {self.rambase}"]
-        )
+        """Export and receive the current U-Boot environment.
+
+        When *offset* is supplied, export the environment at ``rambase +
+        offset`` and upload it from that same address. This keeps it clear of
+        the continuation script, which U-Boot downloads at ``rambase`` before
+        the upload result is resumed.
+        """
+        if export_script is not None and offset is not None:
+            raise ValueError("fetch_env offset cannot be combined with export_script")
+        if export_script is not None:
+            export_lines = export_script
+        elif offset is None:
+            export_lines = [f"env export -t {self.rambase}"]
+        else:
+            export_address = _new_tmp_name("env_export")
+            export_lines = (
+                f"setexpr {export_address} ${{{self.session.env['rambase']}}} + "
+                f"{_format_uboot_number(offset)}",
+                f"env export -t ${{{export_address}}}",
+            )
         size_return = self.bind(size_key, source_key="filesize", public=True)
         await self.exec(export_lines, returns=[size_return])
         size_text = self.session.env.get(size_key)
@@ -337,7 +357,7 @@ class SessionHandle:
             size = _parse_uboot_number(size_text)
         except ValueError as error:
             raise ValueError(f"invalid {size_key!r} value: {size_text!r}") from error
-        data = await self.exec_recv(upload_script, size)
+        data = await self.exec_recv(upload_script, size, offset=offset)
         return ubootenv_parse_export(data)
 
     async def check_cmds(self, cmd_list: list[str]) -> list[str]:

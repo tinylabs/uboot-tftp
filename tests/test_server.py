@@ -320,7 +320,41 @@ def test_tftpy_patch_applies_timeout_to_server_context(tmp_path):
 
     sendoack = state.serverInitial(pkt, "127.0.0.1", 12345)
 
-    assert sendoack is True
-    assert context.options["timeout"] == "11"
-    assert context.timeout == 11
-    assert context.sock.timeout == 11
+    assert sendoack is False
+    assert context.options == {"blksize": 512}
+    assert not hasattr(context, "timeout")
+    assert context.sock.timeout is None
+
+
+def test_tftpy_patch_disables_wrq_option_negotiation_for_compatibility(tmp_path):
+    class FakeSocket:
+        def __init__(self):
+            self.timeout = None
+
+        def settimeout(self, value):
+            self.timeout = value
+
+    context = SimpleNamespace(
+        tidport=None,
+        options=None,
+        host="127.0.0.1",
+        port=12345,
+        root=str(tmp_path),
+        dyn_file_func=None,
+        upload_open=lambda path, context: None,
+        sock=FakeSocket(),
+        file_to_transfer=None,
+    )
+    state = TftpServerState(context)
+    pkt = TftpPacketWRQ()
+    pkt.filename = "upload.bin"
+    pkt.mode = "octet"
+    pkt.options = {"blksize": "1468", "timeout": "11"}
+
+    sendoack = state.serverInitial(pkt, "127.0.0.1", 12345)
+
+    assert sendoack is False
+    assert context.options == {"blksize": 512}
+    assert not hasattr(context, "timeout")
+    assert context.sock.timeout is None
+    assert pkt.options == {"blksize": "1468", "timeout": "11"}

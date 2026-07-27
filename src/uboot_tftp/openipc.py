@@ -147,75 +147,52 @@ async def openipc_nor_backup (tftp, sz: int, filename: str='', final=False) -> b
     msg = uboot_msg (f'  Saved backup as {filename}')
     await tftp.exec([msg], final=True) if final else tftp.exec_queue([msg])
 
-async def openipc_nor_restore (tftp, filename: str, sz: int, final=False):
-    requires = []
-    script = [
-        uboot_msg (f"Uploading {Path(filename).name}... ", nl=False, bold=True),
-        uboot_fetch_static (tftp, filename, offset=1024, requires=requires),
-        uboot_msg ("OK"),
-        uboot_msg ("Erasing flash... ", nl=False, bold=True),
-        uboot_nor_erase (offset=0, size=sz, requires=requires),
-        uboot_msg ("OK"),
-        uboot_msg ("Writing flash... ", nl=False, bold=True),
-        uboot_nor_write (tftp, nor_offset=0, ram_offset=1024, size=sz, requires=requires),
-        uboot_msg ("OK"),
-    ]
-    await tftp.exec (script, requires=requires, final=True) if final else tftp.exec_queue(script, requires=requires)
-
 def build_runcmd(cmd: str, args: str=''):
     parts = [f"cmd={cmd}"]
     if args:
         parts.append(f"args={args}")
-    parts.append("run bootstrap")
+    parts.append("run session")
     return "; ".join(parts)
 
 def gen_mac (mac: str) -> str:
-    if mac in ('00:00:23:34:45:66', '00:00:00:00:00:00'):
+    if mac in ('00:00:23:34:45:66', '00:00:00:00:00:00', '02:00:11:22:33:44'):
         mac_bytes = [0x02] + [random.randint(0x00, 0xFF) for _ in range(5)]
         mac = ":".join(f"{b:02x}" for b in mac_bytes)
     return mac
 
-def _trunc(s: str, max_len: int, suffix: str = "...") -> str:
-    if len(s) <= max_len:
-        return s
-    elif max_len <= len(suffix):
-        return suffix[:max_len]
-    return s[:max_len - len(suffix)] + suffix
+def _trunc(s: str, max_len: int) -> str:
+    if len(s) > max_len or '$' in s:
+        return '...'
+    return s
 
 def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[str,str]):
-    merge = {
-        'ethaddr'    : gen_mac (old_env['ethaddr']),
-        'bootp_vci'  : f'uboot.{ident}',
+    overwrite  = {
+        'ethaddr'    : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
         'hostname'   : ident,
-        'install'    : build_runcmd ('install'),
+        'update'     : build_runcmd ('install', 'cache=0/fw=${fw}/soc=${soc}'),
         'backup'     : build_runcmd ('backup'),
-        'probe_nor'  : build_runcmd ('probe'),
-        'bootstrap'  : '; '.join ([
-            'run netinit',
-            f'if tftpboot {tftp.rambase} '+'${serverip}:id=${hostname}/${cmd}/${args}',
-            f'then source {tftp.rambase}',
-            'else echo "TFTP request failed: is TFTP server running @ ${serverip}?"',
-            'fi'
-        ]),
-        'netinit'    : '; '.join ([
-            'if test "${ip}" = "static" || test -n "$netdone" && test "$netdone" -eq 1',
-            'then echo "Networking OK"',
-            'else setenv autoload no',
-            'dhcp',
-            'netdone=1',
-            'fi'
-        ]),
     }
-    # Add new entries + merge old > new
-    new_env.update({k: merge[k] for k in merge.keys()})
-    keys = ['ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'fw', 'ip']
-    new_env.update({k: old_env[k] for k in keys if k in old_env})
+    merge_keys = [
+        'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'fw', 'ipmode',
+        'id', 'bootp_vci', 'board', 'session', 'netinit',
+    ]
+
+    # TODO: fetch current keys from tools.py to propagate to new env
+    
+    # Make sure loadaddr is set for sandbox
+    if old_env.get('board', '') == 'sandbox':
+        overwrite['baseaddr'] = old_env['loadaddr']
+        overwrite['loadaddr'] = old_env['loadaddr']
+
+    # Add new entries + merge old => new env
+    new_env.update({k: overwrite[k] for k in overwrite.keys()})
+    new_env.update({k: old_env[k] for k in merge_keys if k in old_env})
 
     msgs = []
-    for k, v in merge.items():
-        msgs += [uboot_msg(f'+  {k:<10} = {_trunc(v, 20)}')]
-    for k, v in {key: new_env[key] for key in keys if key in old_env}.items():
-        msgs += [uboot_msg(f'>  {k:<10} = {_trunc(v, 20)}')]
+    for k, v in overwrite.items():
+        msgs += [uboot_msg(f"+  {k:<10} = '{_trunc(v, 30)}'")]
+    for k, v in {key: new_env[key] for key in merge_keys if key in old_env}.items():
+        msgs += [uboot_msg(f">  {k:<10} = '{_trunc(v, 30)}'")]
     return msgs
 
 def openipc_verify_install_args (tftp, ident: str, cmd: str,
@@ -269,7 +246,7 @@ async def openipc_collect_install_context(
 
     nor_size_mb = int(nor_size / 2**20)
     if nor_size_mb not in (8, 16):
-        raise ValueError("Only 8M or 16M NOR flash supported.")
+        raise ValueError(f"Flash={nor_size_mb}M. Only 8M or 16M NOR flash supported.")
     if nor_size_mb < 16 and cenv["fw"] == "ultimate":
         raise ValueError("fw=ultimate requires 16M flash")
     cache = _parse_cache_flag(cenv["cache"])
@@ -451,7 +428,6 @@ async def openipc_load_release_assets(
         flash_type="nor",
         flash_size=context.nor_size,
     )
-
     kernel_asset = _find_release_asset_optional(
         manifest,
         soc=context.soc,
@@ -544,13 +520,13 @@ def openipc_build_partition_payloads(
     rootfs_entry = _require_partition(release.partition_table, "rootfs")
 
     patched_env = dict(release.release_env)
-    openipc_patch_env(tftp, context.ident, context.env, patched_env)
+    msgs = openipc_patch_env(tftp, context.ident, context.env, patched_env)
     env_payload = ubootenv_build(
         patched_env,
         size=env_entry.size,
         little_endian=tftp.is_le,
     )
-
+    tftp.exec_queue(msgs)
     return (
         PartitionPayload(
             name="uboot",
@@ -708,15 +684,6 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
         case 'install':
             await openipc_install (tftp, ident, cmd, tftp_env)
 
-        case 'probe':
-            sz = await uboot_nor_probe(
-                tftp,
-                max_size=tftp_env.get('nor_size', None),
-                pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-                post_cmds=[uboot_msg('OK')],
-            )
-            await tftp.exec(uboot_msg(f'NOR size={sz//2**20}M'), final=True)
-
         case 'backup':
             sz = await uboot_nor_probe(
                 tftp,
@@ -736,7 +703,7 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             path = _openipc_release_path(tag)
             manifest = GithubJsonManifest(tftp, path=path)
             await manifest.load ()
-            matches = manifest.find (match=[soc, 'u-boot'])
+            matches = manifest.find (match=[soc])
             for asset in matches:
                 await manifest.download_asset(
                     asset,
@@ -777,11 +744,11 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             else:
                 msg = uboot_msg('passed')
             await tftp.exec([msg], final=True)
-                        
+
+        case 'onboot':
+            await tftp.exec([uboot_msg("onboot check...")], final=True)
+            
         # Unrecognized cmd
         case _:
             await uboot_nomatch(tftp, ident, cmd,
-                                cmd_list=['install', 'probe', 'backup', 'boot', 'manifest', 'crc32'])
-            await uboot_boot (tftp, delay=10)
-            
-            
+                                cmd_list=['install', 'probe', 'backup', 'boot', 'manifest', 'crc32'], final=True)

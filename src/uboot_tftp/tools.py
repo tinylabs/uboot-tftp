@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import re
+import inspect
+from datetime import datetime
+from pathlib import Path
 from .ubootterm import *
+from .ubootscript import *
+from .ubootops import *
+from .ubootenv import *
 
 INTERNAL_VARS = {
     'id' : {
@@ -124,26 +130,95 @@ def _help_msgs (d: dict, expand: bool=False) -> list[str]:
 async def cmd_bootstrap (tftp, ident: str, env: dict[str, str]):
     var_dict = _session_vars(tftp, ident, env)
     cmds = [f"setenv {key} '{val['var']}'" for key, val in var_dict.items()]
-    msgs = [
-        uboot_msg ('Bootstrap complete.'),
-        uboot_msg (f'Installed {len(cmds)} env variables: {list(var_dict.keys())}', bold=True),
-        uboot_msg("Run `saveenv` to persist across reboot", color='yellow'),
-        uboot_msg('Run `cmd=@help; run session` to view commands.', color='yellow'),
-        uboot_msg('Run `cmd=@help; args=vars=1; run session` to view variables.', color='yellow'),
-    ]
+    msgs = [uboot_msg ('Bootstrap complete.')];
+    if env.get ('verbose', '1') == '1':
+        msgs += [
+            uboot_msg (f'Installed {len(cmds)} env variables: {list(var_dict.keys())}', bold=True),
+            uboot_msg("Run `saveenv` to persist across reboot", color='yellow'),
+            uboot_msg('Run `cmd=@help; run session` to view commands.', color='yellow'),
+            uboot_msg('Run `cmd=@help; args=vars=1; run session` to view variables.', color='yellow'),
+        ]
     await tftp.exec(cmds + msgs, final=True)
 
-async def cmd_help (tftp, ident: str, env: dict[str, str]):
+async def cmd_help (tftp, ident: str, env: dict[str, str], cmd: str=''):
     if 'vars' in env:
         var_dict = _session_vars(tftp, ident, env)
         msgs = _help_msgs (var_dict, expand=True)
     else:
-        msgs = _help_msgs (CMDS)
+        msgs = _help_msgs(dict(CMDS[cmd])) if cmd else _help_msgs(CMDS)
     await tftp.exec([
         uboot_msg("help:", bold=True),
         *msgs,
         ], final=True)
 
+async def _probe_flash (tftp, env: dict[str, str]) -> int:
+    sz = await uboot_nor_probe(
+        tftp,
+        max_size=env.get('max', None),
+        pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
+        post_cmds=[uboot_msg('OK')],
+    )
+    return sz
+
+async def cmd_flash_probe (tftp, ident: str, env: dict[str, str]):
+    sz = await _probe_flash (tftp, env)
+    await tftp.exec(uboot_msg(f'NOR size={sz//2**10}k'), final=True)
+
+async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
+    sz = await _probe_flash (tftp, env)
+    filename = env.get ('filename', '')
+    if not filename:
+        filename = f"snapshot-{ident}-{datetime.now():%Y%m%d-%H%M%S}.bin"
+    binary = await uboot_nor_download(
+        tftp,
+        sz,
+        pre_cmds=[uboot_msg(f"Copying {sz//2**20}M flash to RAM... ", bold=True, nl=False)],
+        post_cmds=[
+            uboot_msg("OK"),
+            uboot_msg("Downloading backup via TFTP...", bold=True),
+        ],
+    )
+    filename = f'backup/{filename}'
+    tftp.write_file (filename, binary)
+    msg = uboot_msg (f'  Saved backup as {filename}')
+    await tftp.exec([msg], final=True)
+
+async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
+    err=False
+    requires = []
+    filename = env.get('filename', None)
+    if not filename:
+        tftp.exec_queue([uboot_err("filename MUST be specified.")])
+        err = True
+    else:
+        try:
+            binary = tftp.read_file(filename)
+            sz = await _probe_flash (tftp, env)
+            if len(binary) != sz:
+                tftp.exec_queue([uboot_err("Filesize not equal to image size.")])
+                err = True
+        except:
+            tftp.exec_queue([uboot_err(f"Failed to read {filename}.")])
+            err = True
+
+    if err:
+        await cmd_help(tftp, ident, env)
+        #await cmd_help(tftp, ident, env, cmd='@flash_restore')
+        return
+    
+    script = [
+        uboot_msg (f"Uploading {Path(filename).name}... ", nl=False, bold=True),
+        uboot_fetch_static (tftp, filename, offset=1024, requires=requires),
+        uboot_msg ("OK"),
+        uboot_msg ("Erasing flash... ", nl=False, bold=True),
+        uboot_nor_erase (offset=0, size=sz, requires=requires),
+        uboot_msg ("OK"),
+        uboot_msg ("Writing flash... ", nl=False, bold=True),
+        uboot_nor_write (tftp, nor_offset=0, ram_offset=1024, size=sz, requires=requires),
+        uboot_msg ("OK"),
+    ]
+    await tftp.exec (script, requires=requires, final=True)
+    
 CMDS = {
     '@bootstrap' :
     {
@@ -166,6 +241,38 @@ CMDS = {
             '  vars=X  : Show framework variables',
             'Execute commands with:',
             '  cmd=<cmd>; args=key1=arg1/key2=arg2; run session',
+        ]
+    },
+    '@flash_probe' :
+    {
+        'handler' : cmd_flash_probe,
+        'help' : [
+            'Probe flash size',
+            'args:',
+            '  max=<n>M  ie: max=8M - Limit detected size',
+            'Only NOR flash supported currently.',
+        ]
+    },
+    '@flash_backup' :
+    {
+        'handler' : cmd_flash_backup,
+        'help' : [
+            'Backup flash via TFTP',
+            'args:',
+            '  max=<n>M  - Limit backup size'
+            '  filename=<filename> default=<datetime>',
+            'Only NOR flash supported currently.',
+        ]
+    },
+    '@flash_restore' :
+    {
+        'handler' : cmd_flash_restore,
+        'help' : [
+            'Restore flash from binary',
+            'args:',
+            '  max=<n>M  - Limit detected size to <n>M',
+            '  filename=<filename> (required)',
+            'Only NOR flash supported currently.',
         ]
     },
 }
