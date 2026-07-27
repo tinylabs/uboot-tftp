@@ -13,7 +13,7 @@ TODO:
   - [x] `unpersist` to revert (as a baked in command, not dependent on tftp server running).
   - [x] Save passed id to use on future bootstrap calls.
   - [ ] ~~Save list of discovered commands/properties to minimize preflight calls.~~
-  - [ ] ~~Use unique namespace prefix for saved commands.~~~
+  - [ ] ~~Use unique namespace prefix for saved commands.~~
   - [ ] echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
   - [ ] Hosted locally only via python fastapi.
 - [x] Add script logging per session.
@@ -332,22 +332,28 @@ uboot-tftp-env firmware.bin \
 
 ## Simulated Client
 
-You can exercise the session flow without hardware:
+You can test using the u-boot sandbox build from this repo: https://github.com/tinylabs/u-boot.
+
+It should allow exercising all functionality up to boot. 
+
+This fork has some critical patches needed that haven't been upstreamed into mainline u-boot.
+- Fixes raw_eth networking bugs.
+- Fixes tftpput on sandbox target.
+- Creates a sandbox specific defconfig for testing this repo.
+- Adds helper scripts to setup network pairs in Linux and launch local dnsmasq for DHCP.
+- Add SPI flash support for sizes >16MB
+- Adds helper script to run with various flash sizes using overlays without recompiling.
 
 ```bash
-uboot-tftp-client 127.0.0.1 --id cam123 --path /bootstrap
-```
-
-The simulated client:
-
-- downloads script images with RRQ
-- prints the script contents
-- echoes non-transfer commands to the terminal
-- follows embedded continuation `tftpboot` requests
-- uploads dummy binary data for embedded `tftpput` requests
-
-It also keeps the old image-extraction mode:
-
-```bash
-uboot-tftp-client boot.uimg
+git clone -b stable https://github.com/tinylabs/u-boot
+cd u-boot
+# enter sudo passwd after compile for setcap needed for raw networking
+./compile.sh
+# In a new terminal
+tools/sandbox-dhcp-tftp 'id=<name>/@bootstrap'
+# launch sandbox u-boot with specified NOR flash
+# Bootstrap will run on launch with loads helper variables
+./tools/sandbox-run-spi <8m|16m|32m>
+# Get built in commands (run from u-boot shell)
+cmd=@help; run session
 ```
