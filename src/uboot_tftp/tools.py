@@ -61,7 +61,7 @@ INTERNAL_VARS = {
             'cmd=onboot',
             'if run session',
             'then echo ""',
-            'echo "Booting default..."',
+            'else echo "Booting default..."',
             'run bootdefault',
             'fi',
         ]),

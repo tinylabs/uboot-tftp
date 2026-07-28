@@ -173,6 +173,9 @@ port = 69
 timeout = 5
 retries = 3
 log_level = "info"
+# ``backslash_c`` (the default) emits ``\\c`` inside echo output when nl=False.
+# Set to ``dash_n`` for targets that support ``echo -n`` instead.
+echo_no_newline = "backslash_c"
 
 [env]
 # These 3 variables are required for server script generation

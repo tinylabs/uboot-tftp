@@ -1,5 +1,6 @@
 from uboot_tftp.ubootterm import (
     ANSI_COLORS,
+    echo_no_newline_mode,
     uboot_err,
     uboot_msg,
     uboot_progress,
@@ -16,6 +17,21 @@ def test_uboot_msg_formats_status_message():
         uboot_msg("hello")
         == 'echo "\x1b8\x1b[J\x1b[32mhello\x1b[0m"; echo "\x1b7"'
     )
+
+
+def test_uboot_msg_uses_backslash_c_by_default_when_newline_is_disabled():
+    assert (
+        uboot_msg("hello", nl=False)
+        == 'echo "\x1b8\x1b[J\x1b[32mhello\x1b[0m\\c"; echo "\x1b7"'
+    )
+
+
+def test_uboot_msg_can_use_echo_dash_n_when_newline_is_disabled():
+    with echo_no_newline_mode("dash_n"):
+        assert (
+            uboot_msg("hello", nl=False)
+            == 'echo -n "\x1b8\x1b[J\x1b[32mhello\x1b[0m"; echo "\x1b7"'
+        )
 
 
 def test_uboot_progress_draws_saved_line_progress_bar():

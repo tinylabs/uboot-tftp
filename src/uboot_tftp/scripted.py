@@ -32,7 +32,7 @@ from .ubootcmds import (
     get_command_spec,
     normalize_requested_commands,
 )
-from .ubootterm import uboot_err, uboot_msg, uboot_term_reset
+from .ubootterm import echo_no_newline_mode, uboot_err, uboot_msg, uboot_term_reset
 from .ubootenv import ubootenv_parse_export
 from .ubootscript import reset_tmp_counter as reset_script_snippet_tmp_counter
 from .uploads import InMemoryUploadStore
@@ -441,12 +441,14 @@ class ScriptedSessionProvider(DynamicContentProvider):
         )
 
     def fetch(self, request: ContentRequest) -> ContentResult:
-        parsed = parse_request_path(request.filename)
-        if not parsed.is_session:
-            return self._static_result(parsed.path)
-        if _is_continuation(parsed):
-            return self._resume_session(request, parsed)
-        return self._start_session(request, parsed)
+        mode = self.config.server.get("echo_no_newline", "backslash_c")
+        with echo_no_newline_mode(mode):
+            parsed = parse_request_path(request.filename)
+            if not parsed.is_session:
+                return self._static_result(parsed.path)
+            if _is_continuation(parsed):
+                return self._resume_session(request, parsed)
+            return self._start_session(request, parsed)
 
     def _start_session(self, request: ContentRequest, parsed: ParsedPath) -> ContentResult:
         existing = self.sessions.get(parsed.client_id)

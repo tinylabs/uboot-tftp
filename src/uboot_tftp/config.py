@@ -19,8 +19,10 @@ _SERVER_KEYS = {
     "retries",
     "log_level",
     "pidfile",
+    "echo_no_newline",
 }
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_ECHO_NO_NEWLINE_VALUES = {"backslash_c", "dash_n"}
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,7 @@ def _validate_server_config(server: dict[str, Any]) -> None:
     _validate_int_range(server, "timeout", minimum=1)
     _validate_int_range(server, "retries", minimum=0)
     _validate_log_level(server)
+    _validate_echo_no_newline(server)
 
     _validate_server_paths(server)
 
@@ -190,6 +193,17 @@ def _validate_log_level(server: dict[str, Any]) -> None:
     if not isinstance(value, str) or value.upper() not in _LOG_LEVELS:
         levels = ", ".join(sorted(_LOG_LEVELS))
         raise ValueError(f"[server] log_level must be one of: {levels}")
+
+
+def _validate_echo_no_newline(server: dict[str, Any]) -> None:
+    value = server.get("echo_no_newline")
+    if value is None:
+        return
+    if not isinstance(value, str) or value not in _ECHO_NO_NEWLINE_VALUES:
+        values = ", ".join(sorted(_ECHO_NO_NEWLINE_VALUES))
+        raise ValueError(
+            f"[server] echo_no_newline must be one of: {values}"
+        )
 
 
 def _load_toml(path: Path) -> dict[str, Any]:

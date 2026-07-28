@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 
 ColorName = Literal[
@@ -14,6 +16,11 @@ ColorName = Literal[
     "cyan",
     "white",
 ]
+EchoNoNewline = Literal["backslash_c", "dash_n"]
+
+_echo_no_newline: ContextVar[EchoNoNewline] = ContextVar(
+    "echo_no_newline", default="backslash_c"
+)
 
 # Terminal control
 SAVE_CURSOR = "\x1b7"
@@ -70,19 +77,35 @@ def uboot_progress(x: int, total: int, color: ColorName = "green", bold: bool = 
     icon = "[" + ("#" * filled) + (" " * (width - filled)) + "]"
     return uboot_status(icon, color, bold)
 
-def uboot_msg(msg: str = "", color: ColorName = "green", bold: bool = False, nl: bool=True) -> str:
+def uboot_msg(
+    msg: str = "", color: ColorName = "green", bold: bool = False, nl: bool = True
+) -> str:
     """Return a U-Boot command that prints a formatted status message."""
 
-    nl = '' if nl else '\\c'
+    value = f"{RESTORE_CURSOR}{CLEAR_REGION}{_style(color, bold)}{msg}{RESTORE}"
+    command = _echo(value) if nl else _echo_without_newline(value)
     return (
-        _echo(f"{RESTORE_CURSOR}{CLEAR_REGION}{_style(color, bold)}{msg}{RESTORE}{nl}")
-        + f"; {_echo(SAVE_CURSOR)}"
+        command + f"; {_echo(SAVE_CURSOR)}"
     )
-
 
 def _echo(value: str) -> str:
     return f"echo {_quote(value)}"
 
+def _echo_without_newline(value: str) -> str:
+    if _echo_no_newline.get() == "backslash_c":
+        return _echo(f"{value}\\c")
+    return f"echo -n {_quote(value)}"
+
+
+@contextmanager
+def echo_no_newline_mode(mode: EchoNoNewline):
+    """Temporarily select the U-Boot echo convention used for ``nl=False``."""
+
+    token = _echo_no_newline.set(mode)
+    try:
+        yield
+    finally:
+        _echo_no_newline.reset(token)
 
 def _quote(value: str) -> str:
     return '"' + value.replace('"', '\\"') + '"'
@@ -109,11 +132,13 @@ __all__ = [
     "CLEAR_REGION",
     "CLEAR_SCREEN",
     "ColorName",
+    "EchoNoNewline",
     "HOME_CURSOR",
     "RESTORE",
     "RESTORE_CURSOR",
     "SAVE_CURSOR",
     "TERM_RESET",
+    "echo_no_newline_mode",
     "uboot_err",
     "uboot_msg",
     "uboot_progress",

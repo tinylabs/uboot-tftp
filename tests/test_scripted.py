@@ -44,16 +44,21 @@ def start_session_script(provider, filename):
     )
 
 
-def write_config(tmp_path, script_body, route="handler"):
+def write_config(tmp_path, script_body, route="handler", echo_no_newline=None):
     script = tmp_path / "script.py"
     script.write_text(script_body)
     config = tmp_path / "config.toml"
+    server_lines = [
+        "[server]",
+        'scriptfile = "script.py"',
+        f'rootdir = "{(tmp_path / "static").resolve()}"',
+    ]
+    if echo_no_newline is not None:
+        server_lines.append(f'echo_no_newline = "{echo_no_newline}"')
     config.write_text(
         "\n".join(
             (
-                "[server]",
-                'scriptfile = "script.py"',
-                f'rootdir = "{(tmp_path / "static").resolve()}"',
+                *server_lines,
                 "",
                 "[env]",
                 'rambase = "loadaddr"',
@@ -91,6 +96,27 @@ def test_scripted_provider_routes_by_client_id_and_passes_path(tmp_path):
 
     assert "echo known cam123 boot -" in start_session_script(provider, "id=cam123/boot")
     assert "echo default other123 boot" in start_session_script(provider, "id=other123/boot")
+
+
+def test_scripted_provider_uses_configured_echo_no_newline_mode(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "from uboot_tftp.ubootterm import uboot_msg",
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(uboot_msg('working', nl=False), final=True)",
+                "async def default(tftp, ident, cmd, env):",
+                "    await handler(tftp, ident, cmd, env)",
+            )
+        ),
+        echo_no_newline="dash_n",
+    )
+    provider = ScriptedSessionProvider(config)
+
+    assert 'echo -n "\x1b8\x1b[J\x1b[32mworking\x1b[0m"' in start_session_script(
+        provider, "id=cam123/test"
+    )
 
 
 def test_special_at_commands_use_builtin_tools_default(tmp_path):
