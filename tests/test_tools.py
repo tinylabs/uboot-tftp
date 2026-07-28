@@ -2,7 +2,7 @@ import asyncio
 import re
 from types import SimpleNamespace
 
-from uboot_tftp.tools import cmd_flash_restore
+from uboot_tftp.tools import builtin_flash_restore
 
 
 class RestoreHandle:
@@ -42,15 +42,15 @@ class RestoreHandle:
         self.queued.extend(script)
 
 
-def test_cmd_flash_restore_stages_the_backup_and_only_flashes_after_download():
+def test_builtin_flash_restore_stages_the_backup_and_only_flashes_after_download():
     handle = RestoreHandle(payload=b"x" * 0x2000, flash_size=0x2000)
 
-    asyncio.run(cmd_flash_restore(handle, "cam123", {"file": "snapshot.bin"}))
+    asyncio.run(builtin_flash_restore(handle, "cam123", {"file": "snapshot.bin"}))
 
     assert len(handle.exec_calls) == 2
     call = handle.exec_calls[1]
     script = "\n".join(call["script"])
-    assert call["final"] is True
+    assert call["final"] is False
     download_line = next(line for line in script.splitlines() if "backup/snapshot.bin" in line)
     assert re.fullmatch(
         r'tftpboot \$\{t[0-9]+\} "192\.0\.2\.1:backup/snapshot\.bin"',

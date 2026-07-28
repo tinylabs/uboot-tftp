@@ -11,6 +11,16 @@ from .ubootscript import *
 from .ubootops import *
 from .ubootenv import *
 
+__all__ = [
+    "builtin_bootstrap",
+    "builtin_flash_backup",
+    "builtin_flash_ls",
+    "builtin_flash_probe",
+    "builtin_flash_restore",
+    "builtin_help",
+    "BUILTIN_VARS",
+]
+
 INTERNAL_VARS = {
     'id' : {
         'var' : '<ident>',
@@ -94,6 +104,7 @@ INTERNAL_VARS = {
         ],
     }
 }
+BUILTIN_VARS = list(INTERNAL_VARS)
 
 FLASH_RESTORE_RAM_OFFSET = 1 * 2**20
 _FLASH_RESTORE_STATUS_VAR = "__uboot_tftp_restore_download_status"
@@ -130,7 +141,7 @@ def _help_msgs (d: dict, expand: bool=False) -> list[str]:
         )
     ]
 
-async def cmd_bootstrap (tftp, ident: str, env: dict[str, str]):
+async def builtin_bootstrap(tftp, ident: str, env: dict[str, str], *, final: bool = False):
     var_dict = _session_vars(tftp, ident, env)
     cmds = [f"setenv {key} '{val['var']}'" for key, val in var_dict.items()]
     msgs = [uboot_msg ('Bootstrap complete.')];
@@ -141,9 +152,11 @@ async def cmd_bootstrap (tftp, ident: str, env: dict[str, str]):
             uboot_msg('Run `cmd=@help; run session` to view commands.', color='yellow'),
             uboot_msg('Run `cmd=@help; args=vars=1; run session` to view variables.', color='yellow'),
         ]
-    await tftp.exec(cmds + msgs, final=True)
+    await tftp.exec(cmds + msgs, final=final)
 
-async def cmd_help (tftp, ident: str, env: dict[str, str], cmd: str=''):
+async def builtin_help(
+    tftp, ident: str, env: dict[str, str], *, cmd: str = '', final: bool = False
+):
     if 'vars' in env:
         var_dict = _session_vars(tftp, ident, env)
         msgs = _help_msgs (var_dict, expand=True)
@@ -152,7 +165,7 @@ async def cmd_help (tftp, ident: str, env: dict[str, str], cmd: str=''):
     await tftp.exec([
         uboot_msg("help:", bold=True),
         *msgs,
-        ], final=True)
+        ], final=final)
 
 async def _probe_flash (tftp, env: dict[str, str]) -> int:
     sz = await uboot_nor_probe(
@@ -163,11 +176,11 @@ async def _probe_flash (tftp, env: dict[str, str]) -> int:
     )
     return sz
 
-async def cmd_flash_probe (tftp, ident: str, env: dict[str, str]):
+async def builtin_flash_probe(tftp, ident: str, env: dict[str, str], *, final: bool = False):
     sz = await _probe_flash (tftp, env)
-    await tftp.exec(uboot_msg(f'NOR size={sz//2**10}kB'), final=True)
+    await tftp.exec(uboot_msg(f'NOR size={sz//2**10}kB'), final=final)
 
-async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
+async def builtin_flash_backup(tftp, ident: str, env: dict[str, str], *, final: bool = False):
     sz = await _probe_flash (tftp, env)
     filename = env.get ('file', '')
     if not filename:
@@ -184,9 +197,9 @@ async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
     filename = f'backup/{filename}'
     tftp.write_file (filename, binary)
     msg = uboot_msg (f'  Saved backup as {filename}')
-    await tftp.exec([msg], final=True)
+    await tftp.exec([msg], final=final)
 
-async def cmd_flash_ls(tftp, ident: str, env: dict[str, str]):
+async def builtin_flash_ls(tftp, ident: str, env: dict[str, str], *, final: bool = False):
     backup_root = Path(tftp.root) / "backup"
     if backup_root.is_dir():
         files = sorted(
@@ -210,9 +223,11 @@ async def cmd_flash_ls(tftp, ident: str, env: dict[str, str]):
         ]
     else:
         messages = [uboot_msg("No backup files found.", color="yellow")]
-    await tftp.exec(messages, final=True)
+    await tftp.exec(messages, final=final)
 
-async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
+async def builtin_flash_restore(
+    tftp, ident: str, env: dict[str, str], *, final: bool = False
+):
     err = False
     requires = []
     filename = env.get('file')
@@ -236,7 +251,7 @@ async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
             err = True
 
     if err:
-        await cmd_help(tftp, ident, env, cmd='@flash_restore')
+        await builtin_help(tftp, ident, env, cmd='@flash_restore', final=final)
         return
 
     backup_path = f"backup/{filename}"
@@ -273,12 +288,12 @@ async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
         "fi",
         f"setenv {_FLASH_RESTORE_STATUS_VAR}",
     ]
-    await tftp.exec(script, requires=requires, final=True)
+    await tftp.exec(script, requires=requires, final=final)
     
 CMDS = {
     '@bootstrap' :
     {
-        'handler' : cmd_bootstrap,
+        'handler' : builtin_bootstrap,
         'help' : [
             'Bootstrap framework variables for session calls.',
             '  args:',
@@ -289,7 +304,7 @@ CMDS = {
     },
     '@help' :
     {
-        'handler' : cmd_help,
+        'handler' : builtin_help,
         'help' : [
             'List of commands available.',
             'args:',
@@ -301,7 +316,7 @@ CMDS = {
     },
     '@flash_probe' :
     {
-        'handler' : cmd_flash_probe,
+        'handler' : builtin_flash_probe,
         'help' : [
             'Probe flash size',
             'args:',
@@ -311,7 +326,7 @@ CMDS = {
     },
     '@flash_backup' :
     {
-        'handler' : cmd_flash_backup,
+        'handler' : builtin_flash_backup,
         'help' : [
             'Backup flash via TFTP',
             'args:',
@@ -322,14 +337,14 @@ CMDS = {
     },
     '@flash_ls' :
     {
-        'handler' : cmd_flash_ls,
+        'handler' : builtin_flash_ls,
         'help' : [
             'List backup files available for restore.',
         ]
     },
     '@flash_restore' :
     {
-        'handler' : cmd_flash_restore,
+        'handler' : builtin_flash_restore,
         'help' : [
             'Restore flash from binary',
             'args:',
@@ -346,4 +361,4 @@ async def default(tftp, ident: str, cmd: str, env: dict[str, str]):
             uboot_err(f'Command `{cmd}` not found.')
         ])
     c = CMDS.get (cmd, CMDS['@help'])
-    await c['handler'] (tftp, ident, env)
+    await c['handler'](tftp, ident, env, final=True)
