@@ -166,7 +166,7 @@ async def cmd_flash_probe (tftp, ident: str, env: dict[str, str]):
 
 async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
     sz = await _probe_flash (tftp, env)
-    filename = env.get ('filename', '')
+    filename = env.get ('file', '')
     if not filename:
         filename = f"snapshot-{ident}-{datetime.now():%Y%m%d-%H%M%S}.bin"
     binary = await uboot_nor_download(
@@ -186,7 +186,7 @@ async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
 async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
     err=False
     requires = []
-    filename = env.get('filename', None)
+    filename = env.get('file', None)
     if not filename:
         tftp.exec_queue([uboot_err("filename MUST be specified.")])
         err = True
@@ -260,7 +260,7 @@ CMDS = {
             'Backup flash via TFTP',
             'args:',
             '  max=<n>M  - Limit backup size'
-            '  filename=<filename> default=<datetime>',
+            '  file=<filename> default=<datetime>',
             'Only NOR flash supported currently.',
         ]
     },
@@ -271,7 +271,7 @@ CMDS = {
             'Restore flash from binary',
             'args:',
             '  max=<n>M  - Limit detected size to <n>M',
-            '  filename=<filename> (required)',
+            '  file=<filename> (required)',
             'Only NOR flash supported currently.',
         ]
     },
