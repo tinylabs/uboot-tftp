@@ -18,6 +18,7 @@ __all__ = [
     "builtin_flash_probe",
     "builtin_flash_restore",
     "builtin_help",
+    "builtin_dict",
     "BUILTIN_VARS",
 ]
 
@@ -128,6 +129,13 @@ def _session_vars(tftp, ident: str, env: dict[str,str]) -> dict:
             'var': pattern.sub(lambda match: mapping[match.group(0)], data['var'])
         }
         for key, data in INTERNAL_VARS.items()
+    }
+
+def builtin_dict(tftp, ident:str, env: dict[str,str]) -> dict:
+    d = _session_vars(tftp, ident, env)
+    return {
+        key: value["var"]
+        for key, value in d.items()
     }
 
 def _help_msgs (d: dict, expand: bool=False) -> list[str]:

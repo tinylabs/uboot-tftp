@@ -21,6 +21,7 @@ from uboot_tftp.ubootscript import *
 from uboot_tftp.ubootops import *
 from uboot_tftp.ubootterm import *
 from uboot_tftp.ubootenv import *
+from uboot_tftp.tools import *
 
 OPENIPC_RELEASE_PATH_PREFIX = "OpenIPC/firmware/releases/tags"
 FLASH_SNAPSHOT_RAM_OFFSET = 16 * 2**20
@@ -130,23 +131,6 @@ class OpenIpcReleaseAssets:
         self.rootfs_asset = rootfs_asset
         self.rootfs_payload = rootfs_payload
 
-async def openipc_nor_backup (tftp, sz: int, filename: str='', final=False) -> bytes:
-    if not filename:
-        filename = f"snapshot-{datetime.now():%Y%m%d-%H%M%S}.bin"
-    binary = await uboot_nor_download(
-        tftp,
-        sz,
-        pre_cmds=[uboot_msg("Copying NOR to RAM... ", bold=True, nl=False)],
-        post_cmds=[
-            uboot_msg("OK"),
-            uboot_msg("Downloading backup via TFTP...", bold=True),
-        ],
-    )
-    filename = f'backup/{filename}'
-    tftp.write_file (filename, binary)
-    msg = uboot_msg (f'  Saved backup as {filename}')
-    await tftp.exec([msg], final=True) if final else tftp.exec_queue([msg])
-
 def build_runcmd(cmd: str, args: str=''):
     parts = [f"cmd={cmd}"]
     if args:
@@ -170,15 +154,12 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
         'ethaddr'    : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
         'hostname'   : ident,
         'update'     : build_runcmd ('install', 'cache=0/fw=${fw}/soc=${soc}'),
-        'backup'     : build_runcmd ('backup'),
     }
     merge_keys = [
-        'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'fw', 'ipmode',
-        'id', 'bootp_vci', 'board', 'session', 'netinit',
+        'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'fw', 'board',
+        *BUILTIN_VARS
     ]
 
-    # TODO: fetch current keys from tools.py to propagate to new env
-    
     # Make sure loadaddr is set for sandbox
     if old_env.get('board', '') == 'sandbox':
         overwrite['baseaddr'] = old_env['loadaddr']
@@ -225,10 +206,14 @@ async def openipc_collect_install_context(
     keys = ["nor_size", "fw", "soc", "cache", "tag"]
     cenv.update({k: tftp_env[k] for k in keys if k in tftp_env})
     cenv.setdefault("fw", "lite")
-    cenv.setdefault("ip", "dhcp")
     cenv.setdefault("nor_size", None)
     cenv.setdefault("cache", "1")
     cenv.setdefault("tag", "latest")
+
+    # Bootstrap if not already done
+    if not all(key in cenv for key in BUILTIN_VARS):
+        await builtin_bootstrap(tftp, ident, {**cenv, 'verbose' : '0'})
+        cenv.update(builtin_dict(tftp, ident, cenv))
 
     msgs = openipc_verify_install_args(tftp, ident, cmd, cenv)
     if msgs:
@@ -636,6 +621,8 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 final=True,
             )
             return
+        else:
+            await builtin_flash_backup(tftp, ident, {'file': f'openipc_backup_{ident}_{datetime.now():%Y%m%d-%H%M%S}.bin'})
         for update in pending:
             await openipc_flash_partition(tftp, ident, update)
         tftp.exec_queue(
@@ -671,8 +658,6 @@ async def uboot_nomatch(tftp, ident: str, cmd: str, cmd_list: list=None, final: 
         uboot_msg()
     ], final=final)
 
-Range = tuple[int, int]
-
 
 async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     '''
@@ -683,16 +668,6 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     match cmd:
         case 'install':
             await openipc_install (tftp, ident, cmd, tftp_env)
-
-        case 'backup':
-            sz = await uboot_nor_probe(
-                tftp,
-                max_size=tftp_env.get('nor_size', None),
-                pre_cmds=[uboot_msg("Probing NOR flash... ", nl=False, bold=True)],
-                post_cmds=[uboot_msg('OK')],
-            )
-            filename = tftp_env.get ('filename', '')
-            await openipc_nor_backup(tftp, sz, filename, final=True)            
 
         case 'boot':
             await uboot_boot (tftp)
