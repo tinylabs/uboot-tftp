@@ -148,7 +148,7 @@ async def cmd_help (tftp, ident: str, env: dict[str, str], cmd: str=''):
         var_dict = _session_vars(tftp, ident, env)
         msgs = _help_msgs (var_dict, expand=True)
     else:
-        msgs = _help_msgs(dict(CMDS[cmd])) if cmd else _help_msgs(CMDS)
+        msgs = _help_msgs({cmd: CMDS[cmd]}) if cmd else _help_msgs(CMDS)
     await tftp.exec([
         uboot_msg("help:", bold=True),
         *msgs,
@@ -191,7 +191,7 @@ async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
     requires = []
     filename = env.get('file')
     if not filename:
-        tftp.exec_queue([uboot_err("args=file=<filename> MUST be specified.")])
+        tftp.exec_queue([uboot_err("file=<filename> must be specified.")])
         err = True
     else:
         try:
@@ -210,7 +210,7 @@ async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
             err = True
 
     if err:
-        await cmd_help(tftp, ident, env)
+        await cmd_help(tftp, ident, env, cmd='@flash_restore')
         return
 
     backup_path = f"backup/{filename}"

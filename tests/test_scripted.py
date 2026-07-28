@@ -144,6 +144,29 @@ def test_special_at_commands_use_builtin_tools_default(tmp_path):
     assert "echo user default" not in script
 
 
+def test_flash_restore_missing_file_shows_only_restore_help(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo user handler'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo user default'], final=True)",
+            )
+        ),
+    )
+    provider = ScriptedSessionProvider(config)
+
+    script = start_session_script(provider, "id=cam123/@flash_restore")
+
+    assert "args=file=<filename> MUST be specified." in script
+    assert "@flash_restore:" in script
+    assert "Restore flash from binary" in script
+    assert "@flash_backup:" not in script
+
+
 def test_scripted_provider_serves_static_file_for_bare_rrq(tmp_path):
     config = write_config(
         tmp_path,
