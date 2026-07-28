@@ -167,6 +167,33 @@ def test_flash_restore_missing_file_shows_only_restore_help(tmp_path):
     assert "@flash_backup:" not in script
 
 
+def test_flash_ls_lists_backup_files(tmp_path):
+    config = write_config(
+        tmp_path,
+        "\n".join(
+            (
+                "async def handler(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo user handler'], final=True)",
+                "",
+                "async def default(tftp, ident, cmd, env):",
+                "    await tftp.exec(['echo user default'], final=True)",
+            )
+        ),
+    )
+    backup_root = tmp_path / "static" / "backup"
+    (backup_root / "nested").mkdir(parents=True)
+    (backup_root / "camera-b.bin").write_bytes(b"backup-b")
+    (backup_root / "nested" / "camera-a.bin").write_bytes(b"backup-a")
+    provider = ScriptedSessionProvider(config)
+
+    script = start_session_script(provider, "id=cam123/@flash_ls")
+
+    assert "Backups:" in script
+    assert "camera-b.bin (0.0 kB)" in script
+    assert "nested/camera-a.bin (0.0 kB)" in script
+    assert "user handler" not in script
+
+
 def test_scripted_provider_serves_static_file_for_bare_rrq(tmp_path):
     config = write_config(
         tmp_path,

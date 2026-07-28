@@ -186,6 +186,32 @@ async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
     msg = uboot_msg (f'  Saved backup as {filename}')
     await tftp.exec([msg], final=True)
 
+async def cmd_flash_ls(tftp, ident: str, env: dict[str, str]):
+    backup_root = Path(tftp.root) / "backup"
+    if backup_root.is_dir():
+        files = sorted(
+            (
+                (path.relative_to(backup_root).as_posix(), path.stat().st_size)
+                for path in backup_root.rglob("*")
+                if path.is_file()
+            ),
+            key=lambda item: item[0].lower(),
+        )
+    else:
+        files = []
+
+    if files:
+        messages = [
+            uboot_msg("Backups:", bold=True),
+            *(
+                uboot_msg(f"  {filename} ({size / 1024:.1f} kB)")
+                for filename, size in files
+            ),
+        ]
+    else:
+        messages = [uboot_msg("No backup files found.", color="yellow")]
+    await tftp.exec(messages, final=True)
+
 async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
     err = False
     requires = []
@@ -292,6 +318,13 @@ CMDS = {
             '  max=<n>M  - Limit backup size'
             '  file=<filename> default=<datetime>',
             'Only NOR flash supported currently.',
+        ]
+    },
+    '@flash_ls' :
+    {
+        'handler' : cmd_flash_ls,
+        'help' : [
+            'List backup files available for restore.',
         ]
     },
     '@flash_restore' :
