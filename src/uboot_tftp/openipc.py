@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from uboot_tftp.flashplan import PartitionPayload, PartitionUpdate, build_partition_update_plan
 from uboot_tftp.github_assets import GithubAsset, GithubJsonManifest
-from uboot_tftp.partitions import PartitionEntry
+from uboot_tftp.partitions import PartitionEntry, PartitionTable, resolve_env_references
 from uboot_tftp.ubootscript import *
 from uboot_tftp.ubootops import *
 from uboot_tftp.ubootterm import *
@@ -46,8 +46,23 @@ def openipc_partition_table(
             continue
         spec = extract_mtdparts_spec(value)
         if spec is None:
+            # An indirect value such as ``mtdparts=${layout}`` cannot be
+            # recognized until expanded.  Prefer extracting first, though:
+            # bootargs often has unrelated unresolved variables after an
+            # otherwise valid table (e.g. memory tuning parameters).
+            try:
+                spec = extract_mtdparts_spec(resolve_env_references(value, env))
+            except ValueError:
+                continue
+        if spec is None:
             continue
-        return parse_mtdparts_spec(spec, total_size=flash_size)
+        try:
+            spec = resolve_env_references(spec, env)
+            table = parse_mtdparts_spec(spec, total_size=flash_size)
+            _validate_openipc_partition_table(table)
+        except (KeyError, ValueError):
+            continue
+        return table
     raise ValueError("unable to find an OpenIPC mtdparts specification in environment")
 
 
@@ -74,14 +89,32 @@ def _openipc_mtdparts_keys(
     keys.extend(
         sorted(name for name in env if name.startswith("mtdpartsnor") and name not in keys)
     )
-    keys.extend(
-        sorted(
-            name
-            for name in env
-            if "mtdparts" in name and name not in keys
-        )
-    )
+    keys.extend(sorted(name for name in env if "mtdparts" in name and name not in keys))
+    # A table may be embedded in bootargs or another arbitrary default-env
+    # variable rather than exposed through an mtdparts-named variable.
+    keys.extend(sorted(name for name in env if name not in keys))
     return keys
+
+
+def _validate_openipc_partition_table(table: PartitionTable) -> None:
+    """Ensure a resolved release table is safe and usable for installation."""
+    if table.total_size is None:
+        raise ValueError("flash capacity is required to validate mtdparts")
+
+    entries = table.resolved_entries()
+    previous_end = 0
+    for entry in entries:
+        assert entry.size is not None
+        if entry.size <= 0:
+            raise ValueError(f"partition {entry.name!r} has a non-positive size")
+        if entry.offset < previous_end:
+            raise ValueError(f"partition {entry.name!r} overlaps a previous partition")
+        previous_end = entry.offset + entry.size
+
+    _require_partition(table, "uboot", "boot")
+    _require_partition(table, "env")
+    _require_partition(table, "kernel")
+    _require_partition(table, "rootfs")
 
 
 class OpenIpcInstallContext:
@@ -514,7 +547,8 @@ def openipc_build_partition_payloads(
         size=env_entry.size,
         little_endian=tftp.is_le,
     )
-    tftp.exec_queue(msgs)
+    if hasattr(tftp, "exec_queue"):
+        tftp.exec_queue(msgs)
     return (
         PartitionPayload(
             name="uboot",

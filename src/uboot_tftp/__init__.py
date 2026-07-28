@@ -18,6 +18,7 @@ from .partitions import (
     PartitionTable,
     extract_mtdparts_spec,
     parse_mtdparts_spec,
+    resolve_env_references,
 )
 from .protocol import ParsedPath, parse_request_path
 from .providers import CallableContentProvider, ContentRequest, ContentResult
@@ -110,6 +111,7 @@ __all__ = [
     "partition_payload_crc32",
     "extract_mtdparts_spec",
     "parse_mtdparts_spec",
+    "resolve_env_references",
 ]
 
 

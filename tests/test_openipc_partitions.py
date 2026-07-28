@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 def load_openipc_module():
     path = Path(__file__).resolve().parents[1] / "scripts" / "openipc.py"
@@ -39,3 +41,48 @@ def test_openipc_partition_table_falls_back_to_default_mtdparts():
     assert table.range("boot") == (0x00000, 0x40000)
     assert table.range("env") == (0x40000, 0x10000)
     assert table.range("rootfs_data") == (0x750000, 0x800000 - 0x750000)
+
+
+def test_openipc_partition_table_uses_matching_nor_layout_before_generic_or_nand():
+    module = load_openipc_module()
+    env = {
+        "mtdpartsnor8m": "nor:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(data)",
+        "mtdpartsnor16m": "nor:256k(boot),64k(env),3072k(kernel),10240k(rootfs),-(data)",
+        "mtdparts": "nor:256k(boot),64k(env),1024k(kernel),2048k(rootfs),-(data)",
+        "mtdpartsnand": "nand:256k(boot),64k(env),1024k(kernel),2048k(rootfs),-(ubi)",
+    }
+
+    table = module.openipc_partition_table(env, flash_type="nor", flash_size=16 * 2**20)
+
+    assert table.range("kernel") == (0x50000, 0x300000)
+
+
+def test_openipc_partition_table_resolves_embedded_bootargs_references():
+    module = load_openipc_module()
+    env = {
+        "rootmtd": "5120k",
+        "bootargs": (
+            r"console=ttyS0 mtdparts=NOR_FLASH:256k(boot),64k(env),2048k(kernel),"
+            r"\${rootmtd}(rootfs),-(rootfs_data) LX_MEM=\${unrelated_memory}"
+        ),
+    }
+
+    table = module.openipc_partition_table(env, flash_type="nor", flash_size=8 * 2**20)
+
+    assert table.range("rootfs") == (0x250000, 0x500000)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"mtdparts": "nor:256k(boot),64k(env),2048k(kernel),-(data)"},
+        {"mtdparts": "nor:256k(boot),64k(env),2048k(kernel),$missing(rootfs)"},
+        {"one": "${two}", "two": "${one}", "mtdparts": "nor:${one}(boot)"},
+        {"mtdparts": "nor:256k(boot),64k(env),16m(kernel),1m(rootfs)"},
+    ],
+)
+def test_openipc_partition_table_rejects_unusable_layouts(env):
+    module = load_openipc_module()
+
+    with pytest.raises(ValueError, match="unable to find"):
+        module.openipc_partition_table(env, flash_type="nor", flash_size=8 * 2**20)
