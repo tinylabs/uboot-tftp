@@ -4,6 +4,7 @@ from uboot_tftp.partitions import (
     PartitionEntry,
     extract_mtdparts_spec,
     parse_mtdparts_spec,
+    replace_mtdparts_spec,
     resolve_env_references,
 )
 
@@ -62,6 +63,14 @@ def test_extract_mtdparts_spec_stops_before_trailing_bootargs():
     assert spec == (
         "NOR_FLASH:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)"
     )
+
+
+def test_replace_mtdparts_spec_handles_a_uboot_variable_reference():
+    bootargs = "mem=${osmem} mtdparts=${mtdparts} ${extras}"
+
+    updated = replace_mtdparts_spec(bootargs, "${_mtdparts}")
+
+    assert updated == "mem=${osmem} mtdparts=${_mtdparts} ${extras}"
 
 
 def test_resolve_env_references_handles_nested_and_escaped_uboot_references():

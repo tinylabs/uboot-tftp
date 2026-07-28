@@ -181,6 +181,43 @@ def test_openipc_build_partition_payloads_uses_tftp_endianness_for_env_crc():
     assert env_payload.payload[:4] == crc.to_bytes(4, "big")
 
 
+def test_openipc_build_partition_payloads_sets_resolved_mtdparts_in_bootargs():
+    module = load_openipc_module()
+    context = module.OpenIpcInstallContext(
+        ident="cam123",
+        cmd="install",
+        env={"ethaddr": "00:11:22:33:44:55", "soc": "gk7205v300", "fw": "lite"},
+        nor_size=8 * 2**20,
+        soc="gk7205v300",
+        fw="lite",
+        cache=True,
+        tag="latest",
+    )
+    spec = "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)"
+    release = module.OpenIpcReleaseAssets(
+        manifest=SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest"),
+        release_env={"bootargs": f"console=ttyS0 mtdparts={spec} LX_MEM=0x200000"},
+        partition_table=parse_mtdparts_spec(spec, total_size=8 * 2**20),
+        uboot_asset={"browser_download_url": "https://example.com/u-boot.bin"},
+        uboot_payload=b"uboot",
+        kernel_asset={"browser_download_url": "https://example.com/kernel.bin"},
+        kernel_payload=b"kernel",
+        rootfs_asset={"browser_download_url": "https://example.com/rootfs.bin"},
+        rootfs_payload=b"rootfs",
+        mtdparts_spec=spec,
+    )
+
+    class FakeTftp:
+        rambase = "loadaddr"
+        is_le = True
+
+    payloads = module.openipc_build_partition_payloads(FakeTftp(), context, release)
+    env_data = ubootenv_parse_part(next(item for item in payloads if item.name == "env").payload)
+
+    assert env_data["_mtdparts"] == spec
+    assert env_data["bootargs"] == "console=ttyS0 mtdparts=${_mtdparts} LX_MEM=0x200000"
+
+
 def test_openipc_load_release_assets_uses_context_cache_for_manifest_and_assets(monkeypatch):
     module = load_openipc_module()
     seen = {"manifest_cache": None, "asset_cache": []}

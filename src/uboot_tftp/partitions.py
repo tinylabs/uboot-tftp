@@ -22,6 +22,7 @@ _MTDPARTS_SPEC_RE = re.compile(
 _ENV_REFERENCE_RE = re.compile(
     r"(?:\\)?\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
 )
+_MTDPARTS_REFERENCE_RE = re.compile(rf"\bmtdparts={_ENV_REFERENCE_TEXT_RE}")
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,17 @@ def extract_mtdparts_spec(value: str) -> str | None:
     """
     for match in _MTDPARTS_SPEC_RE.finditer(value):
         return match.group(0)
+    return None
+
+
+def replace_mtdparts_spec(value: str, replacement: str) -> str | None:
+    """Replace the first mtdparts table or U-Boot variable reference."""
+    match = _MTDPARTS_SPEC_RE.search(value)
+    if match is not None:
+        return f"{value[:match.start()]}{replacement}{value[match.end():]}"
+    match = _MTDPARTS_REFERENCE_RE.search(value)
+    if match is not None:
+        return f"{value[:match.start()]}mtdparts={replacement}{value[match.end():]}"
     return None
 
 

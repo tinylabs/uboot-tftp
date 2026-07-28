@@ -57,6 +57,46 @@ def test_openipc_partition_table_uses_matching_nor_layout_before_generic_or_nand
     assert table.range("kernel") == (0x50000, 0x300000)
 
 
+def test_openipc_partition_table_chooses_smallest_layout_that_fits_payloads():
+    module = load_openipc_module()
+    env = {
+        "mtdpartsnor8m": "nor:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(data)",
+        "mtdpartsnor16m": "nor:256k(boot),64k(env),3072k(kernel),10240k(rootfs),-(data)",
+    }
+
+    small = module.openipc_partition_table(
+        env,
+        flash_type="nor",
+        flash_size=16 * 2**20,
+        payload_sizes={"uboot": 1, "kernel": 2 * 2**20, "rootfs": 5 * 2**20},
+    )
+    large = module.openipc_partition_table(
+        env,
+        flash_type="nor",
+        flash_size=16 * 2**20,
+        payload_sizes={"uboot": 1, "kernel": 2 * 2**20, "rootfs": 6 * 2**20},
+    )
+
+    assert small.range("rootfs") == (0x250000, 0x500000)
+    assert large.range("rootfs") == (0x350000, 0xA00000)
+
+
+def test_openipc_partition_table_reports_when_assets_do_not_fit_any_layout():
+    module = load_openipc_module()
+    env = {
+        "mtdpartsnor8m": "nor:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(data)",
+        "mtdpartsnor16m": "nor:256k(boot),64k(env),3072k(kernel),10240k(rootfs),-(data)",
+    }
+
+    with pytest.raises(ValueError, match="release assets do not fit"):
+        module.openipc_partition_table(
+            env,
+            flash_type="nor",
+            flash_size=16 * 2**20,
+            payload_sizes={"uboot": 1, "kernel": 2 * 2**20, "rootfs": 11 * 2**20},
+        )
+
+
 def test_openipc_partition_table_resolves_embedded_bootargs_references():
     module = load_openipc_module()
     env = {

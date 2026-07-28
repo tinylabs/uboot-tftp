@@ -16,7 +16,12 @@ from urllib.parse import urlparse
 
 from uboot_tftp.flashplan import PartitionPayload, PartitionUpdate, build_partition_update_plan
 from uboot_tftp.github_assets import GithubAsset, GithubJsonManifest
-from uboot_tftp.partitions import PartitionEntry, PartitionTable, resolve_env_references
+from uboot_tftp.partitions import (
+    PartitionEntry,
+    PartitionTable,
+    replace_mtdparts_spec,
+    resolve_env_references,
+)
 from uboot_tftp.ubootscript import *
 from uboot_tftp.ubootops import *
 from uboot_tftp.ubootterm import *
@@ -34,7 +39,28 @@ def openipc_partition_table(
     flash_size: int | None = None,
     flash_type: str | None = None,
     key: str | None = None,
+    payload_sizes: dict[str, int] | None = None,
 ) -> PartitionTable:
+    table, _ = _openipc_partition_layout(
+        env,
+        flash_size=flash_size,
+        flash_type=flash_type,
+        key=key,
+        payload_sizes=payload_sizes,
+    )
+    return table
+
+
+def _openipc_partition_layout(
+    env: dict[str, str],
+    *,
+    flash_size: int | None,
+    flash_type: str | None,
+    key: str | None,
+    payload_sizes: dict[str, int] | None,
+) -> tuple[PartitionTable, str]:
+    valid: list[tuple[int, PartitionTable, str]] = []
+    resolved_layouts = 0
     for candidate in _openipc_mtdparts_keys(
         env,
         flash_size=flash_size,
@@ -62,8 +88,27 @@ def openipc_partition_table(
             _validate_openipc_partition_table(table)
         except (KeyError, ValueError):
             continue
-        return table
-    raise ValueError("unable to find an OpenIPC mtdparts specification in environment")
+        resolved_layouts += 1
+        if payload_sizes is None:
+            return table, spec
+        if _partition_payloads_fit(table, payload_sizes):
+            valid.append((len(valid), table, spec))
+    if valid:
+        _, table, spec = min(
+            valid,
+            key=lambda item: (_install_layout_end(item[1]), item[0]),
+        )
+        return table, spec
+    if payload_sizes is not None and resolved_layouts:
+        sizes = ", ".join(
+            f"{name}={size//2**10}kB" for name, size in sorted(payload_sizes.items())
+        )
+        raise ValueError(
+            "Release assets do not fit mtdparts layout "
+            f"({sizes}) "
+            f"flash={flash_size//2**10}kB"
+        )
+    raise ValueError("Unable to find an OpenIPC mtdparts specification in environment")
 
 
 def _openipc_mtdparts_keys(
@@ -117,6 +162,30 @@ def _validate_openipc_partition_table(table: PartitionTable) -> None:
     _require_partition(table, "rootfs")
 
 
+def _partition_payloads_fit(table: PartitionTable, payload_sizes: dict[str, int]) -> bool:
+    for name, payload_size in payload_sizes.items():
+        names = ("uboot", "boot") if name == "uboot" else (name,)
+        try:
+            entry = _require_partition(table, *names)
+        except ValueError:
+            return False
+        if payload_size > entry.size:
+            return False
+    return True
+
+
+def _install_layout_end(table: PartitionTable) -> int:
+    return max(
+        entry.offset + entry.size
+        for entry in (
+            _require_partition(table, "uboot", "boot"),
+            _require_partition(table, "env"),
+            _require_partition(table, "kernel"),
+            _require_partition(table, "rootfs"),
+        )
+    )
+
+
 class OpenIpcInstallContext:
     def __init__(
         self,
@@ -153,6 +222,7 @@ class OpenIpcReleaseAssets:
         kernel_payload: bytes,
         rootfs_asset: GithubAsset,
         rootfs_payload: bytes,
+        mtdparts_spec: str | None = None,
     ) -> None:
         self.manifest = manifest
         self.release_env = release_env
@@ -163,6 +233,7 @@ class OpenIpcReleaseAssets:
         self.kernel_payload = kernel_payload
         self.rootfs_asset = rootfs_asset
         self.rootfs_payload = rootfs_payload
+        self.mtdparts_spec = mtdparts_spec
 
 def build_runcmd(cmd: str, args: str=''):
     parts = [f"cmd={cmd}"]
@@ -212,14 +283,15 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
 def openipc_verify_install_args (tftp, ident: str, cmd: str,
                                  env: dict[str, str]) -> list:
     script = []
+    fw = env.get("fw")
     if 'soc' not in env:
         script.append (uboot_err ("Must pass soc=name"))
-    if env['fw'] not in ('lite', 'ultimate'):
-        script.append (uboot_err (f"Invalid: fw={env['fw']} - Only fw=lite|ultimate supported"))
+    if fw not in ('lite', 'ultimate'):
+        script.append (uboot_err (f"fw={fw} - Only fw=lite|ultimate supported"))
     if script:
-        script.append (uboot_err (f"ie: {tftp.cmdtftp} {tftp.rambase} " +
-                                  "{tftp.server_ip}:id={ident}/{cmd}/soc=gk7205v300/fw=lite; " +
-                                  "source {tftp.rambase}"))
+        script.append (uboot_err (f"ie: {tftp.cmdtftp} {tftp.rambase} "
+                                  f"{tftp.server_ip}:id={ident}/{cmd}/soc=gk7205v300/fw=lite; "
+                                  f"source {tftp.rambase}"))
     return script
 
 
@@ -262,11 +334,13 @@ async def openipc_collect_install_context(
     if nor_size == 0:
         raise ValueError("NOR flash not detected! Aborting...")
 
+    '''
     nor_size_mb = int(nor_size / 2**20)
     if nor_size_mb not in (8, 16):
         raise ValueError(f"Flash={nor_size_mb}M. Only 8M or 16M NOR flash supported.")
     if nor_size_mb < 16 and cenv["fw"] == "ultimate":
         raise ValueError("fw=ultimate requires 16M flash")
+    '''
     cache = _parse_cache_flag(cenv["cache"])
     tag = str(cenv["tag"]).strip()
     if not tag:
@@ -444,11 +518,6 @@ async def openipc_load_release_assets(
     # U-Boot payload embedded in an XZ member.  Do not infer a flash layout
     # here; extract the compiled-in default environment from the image.
     release_env = extract_default_env_from_uboot(uboot_payload)
-    partition_table = openipc_partition_table(
-        release_env,
-        flash_type="nor",
-        flash_size=context.nor_size,
-    )
     kernel_asset = _find_release_asset_optional(
         manifest,
         soc=context.soc,
@@ -498,6 +567,17 @@ async def openipc_load_release_assets(
                 "browser_download_url": str(bundle_asset.get("browser_download_url", "")),
             }
         )
+    partition_table, mtdparts_spec = _openipc_partition_layout(
+        release_env,
+        flash_type="nor",
+        flash_size=context.nor_size,
+        key=None,
+        payload_sizes={
+            "uboot": len(uboot_payload),
+            "kernel": len(kernel_payload),
+            "rootfs": len(rootfs_payload),
+        },
+    )
     return OpenIpcReleaseAssets(
         manifest=manifest,
         release_env=release_env,
@@ -508,6 +588,7 @@ async def openipc_load_release_assets(
         kernel_payload=kernel_payload,
         rootfs_asset=rootfs_asset,
         rootfs_payload=rootfs_payload,
+        mtdparts_spec=mtdparts_spec,
     )
 
 
@@ -541,6 +622,15 @@ def openipc_build_partition_payloads(
     rootfs_entry = _require_partition(release.partition_table, "rootfs")
 
     patched_env = dict(release.release_env)
+    if release.mtdparts_spec is not None:
+        bootargs = patched_env.get("bootargs")
+        if bootargs is None:
+            raise ValueError("release environment has no bootargs to update mtdparts")
+        updated_bootargs = replace_mtdparts_spec(bootargs, "${_mtdparts}")
+        if updated_bootargs is None:
+            raise ValueError("release bootargs has no mtdparts specification to update")
+        patched_env["_mtdparts"] = release.mtdparts_spec
+        patched_env["bootargs"] = updated_bootargs
     msgs = openipc_patch_env(tftp, context.ident, context.env, patched_env)
     env_payload = ubootenv_build(
         patched_env,
