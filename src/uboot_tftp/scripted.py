@@ -1121,7 +1121,10 @@ def _receive_address(
 ) -> tuple[str, str | None, str | None]:
     if offset is None:
         return (f'${{{session.env["rambase"]}}}', None, None)
-    tmp_name = _new_tmp_name("recv")
+    # Keep this distinct from ubootscript.py snippet temporaries (t0, t1, ...).
+    # The receive address remains live until after tftpput, while snippets may
+    # clear their own temporaries before that command runs.
+    tmp_name = "__uboot_tftp_recv_addr"
     prelude = (
         f"setexpr {tmp_name} ${{{session.env['rambase']}}} + "
         f"{_format_uboot_number(offset)}"

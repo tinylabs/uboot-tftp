@@ -162,7 +162,7 @@ async def _probe_flash (tftp, env: dict[str, str]) -> int:
 
 async def cmd_flash_probe (tftp, ident: str, env: dict[str, str]):
     sz = await _probe_flash (tftp, env)
-    await tftp.exec(uboot_msg(f'NOR size={sz//2**10}k'), final=True)
+    await tftp.exec(uboot_msg(f'NOR size={sz//2**10}kB'), final=True)
 
 async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
     sz = await _probe_flash (tftp, env)
@@ -172,7 +172,7 @@ async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
     binary = await uboot_nor_download(
         tftp,
         sz,
-        pre_cmds=[uboot_msg(f"Copying {sz//2**20}M flash to RAM... ", bold=True, nl=False)],
+        pre_cmds=[uboot_msg(f"Copying {sz//2**10}kB flash to RAM... ", bold=True, nl=False)],
         post_cmds=[
             uboot_msg("OK"),
             uboot_msg("Downloading backup via TFTP...", bold=True),
@@ -192,7 +192,7 @@ async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
         err = True
     else:
         try:
-            binary = tftp.read_file(filename)
+            binary = tftp.read_file(f'backup/{filename}')
             sz = await _probe_flash (tftp, env)
             if len(binary) != sz:
                 tftp.exec_queue([uboot_err("Filesize not equal to image size.")])
