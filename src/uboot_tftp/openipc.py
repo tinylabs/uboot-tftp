@@ -407,7 +407,10 @@ async def openipc_load_release_assets(
         destination=_asset_destination(uboot_manifest, uboot_asset, context.soc),
         cache=context.cache,
     )
-    release_env = ubootenv_extract(uboot_payload)
+    # Release assets are standalone U-Boot images, sometimes with the actual
+    # U-Boot payload embedded in an XZ member.  Do not infer a flash layout
+    # here; extract the compiled-in default environment from the image.
+    release_env = extract_default_env_from_uboot(uboot_payload)
     partition_table = openipc_partition_table(
         release_env,
         flash_type="nor",

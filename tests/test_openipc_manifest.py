@@ -65,7 +65,7 @@ def test_openipc_load_release_assets_uses_release_uboot_env_for_partition_table(
             return payloads[Path(destination).name]
 
     monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
-    monkeypatch.setattr(module, "ubootenv_extract", lambda payload: release_env)
+    monkeypatch.setattr(module, "extract_default_env_from_uboot", lambda payload: release_env)
 
     context = module.OpenIpcInstallContext(
         ident="cam123",
@@ -209,7 +209,7 @@ def test_openipc_load_release_assets_uses_context_cache_for_manifest_and_assets(
     monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
     monkeypatch.setattr(
         module,
-        "ubootenv_extract",
+        "extract_default_env_from_uboot",
         lambda payload: {
             "mtdparts": "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
         },
@@ -284,7 +284,7 @@ def test_openipc_load_release_assets_can_extract_kernel_and_rootfs_from_tgz(monk
             return payloads[Path(destination).name]
 
     monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
-    monkeypatch.setattr(module, "ubootenv_extract", lambda payload: release_env)
+    monkeypatch.setattr(module, "extract_default_env_from_uboot", lambda payload: release_env)
 
     context = module.OpenIpcInstallContext(
         ident="cam123",
@@ -354,7 +354,7 @@ def test_openipc_load_release_assets_falls_back_to_latest_for_missing_tagged_ubo
             return payloads[Path(destination).name]
 
     monkeypatch.setattr(module, "GithubJsonManifest", FakeManifest)
-    monkeypatch.setattr(module, "ubootenv_extract", lambda payload: release_env)
+    monkeypatch.setattr(module, "extract_default_env_from_uboot", lambda payload: release_env)
 
     context = module.OpenIpcInstallContext(
         ident="cam123",
