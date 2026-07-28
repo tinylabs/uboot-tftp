@@ -135,23 +135,29 @@ def uboot_fetch_static(
     requires: list | None = None,
     offset: int | str | None = None,
     base: str | None = None,
+    result_var: str | None = None,
 ) -> str:
-    """Return a U-Boot snippet that downloads a static file into RAM."""
+    """Return a U-Boot snippet that downloads a static file into RAM.
+
+    When *result_var* is provided, it receives the target command's exit
+    status before the temporary address is cleared.
+    """
 
     requires = requires or []
     requires += ['setexpr', 'cmdtftp', 'setenv']
     addr_var = _next_tmp("addr")
     base_expr = _normalize_base(tftp, base)
     remote_path = str(filename).lstrip("/")
-    if offset is None:
-        return f'{tftp.cmdtftp} {tftp.rambase} "{tftp.server_ip}:{remote_path}"'
-    return "\n".join(
-        (
-            f"setexpr {addr_var} {base_expr} + {_format_number(offset)}",
-            f'{tftp.cmdtftp} ${{{addr_var}}} "{tftp.server_ip}:{remote_path}"',
-            f"setenv {addr_var}",
-        )
-    )
+    address = tftp.rambase if offset is None else f"${{{addr_var}}}"
+    lines = []
+    if offset is not None:
+        lines.append(f"setexpr {addr_var} {base_expr} + {_format_number(offset)}")
+    lines.append(f'{tftp.cmdtftp} {address} "{tftp.server_ip}:{remote_path}"')
+    if result_var is not None:
+        lines.append(f"setenv {result_var} $?")
+    if offset is not None:
+        lines.append(f"setenv {addr_var}")
+    return "\n".join(lines)
 
 def uboot_nor_gen_probe(
     tftp: Any,

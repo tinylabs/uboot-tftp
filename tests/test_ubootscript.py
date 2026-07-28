@@ -101,6 +101,18 @@ def test_uboot_fetch_static_uses_relative_offset_and_unsets_tmp():
     assert lines[2] == f"setenv {tmp_name}"
 
 
+def test_uboot_fetch_static_can_capture_the_target_command_status():
+    script = uboot_fetch_static(
+        FakeTftp(), "images/fw.bin", offset=0x400, result_var="download_status"
+    )
+
+    lines = script.splitlines()
+    tmp_name = lines[0].split()[1]
+    assert lines[1] == f'tftpboot ${{{tmp_name}}} "127.0.0.1:images/fw.bin"'
+    assert lines[2] == "setenv download_status $?"
+    assert lines[3] == f"setenv {tmp_name}"
+
+
 def test_uboot_crc32_gen_saves_and_restores_scratch_word():
     script = uboot_crc32_gen(0x42000000, 0x1000, scratch="${loadaddr}", result="crc_out")
 

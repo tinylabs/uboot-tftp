@@ -95,6 +95,9 @@ INTERNAL_VARS = {
     }
 }
 
+FLASH_RESTORE_RAM_OFFSET = 1 * 2**20
+_FLASH_RESTORE_STATUS_VAR = "__uboot_tftp_restore_download_status"
+
 
 def _session_vars(tftp, ident: str, env: dict[str,str]) -> dict:
 
@@ -184,40 +187,67 @@ async def cmd_flash_backup (tftp, ident: str, env: dict[str, str]):
     await tftp.exec([msg], final=True)
 
 async def cmd_flash_restore (tftp, ident: str, env: dict[str, str]):
-    err=False
+    err = False
     requires = []
-    filename = env.get('file', None)
+    filename = env.get('file')
     if not filename:
-        tftp.exec_queue([uboot_err("filename MUST be specified.")])
+        tftp.exec_queue([uboot_err("args=file=<filename> MUST be specified.")])
         err = True
     else:
         try:
             binary = tftp.read_file(f'backup/{filename}')
-            sz = await _probe_flash (tftp, env)
-            if len(binary) != sz:
-                tftp.exec_queue([uboot_err("Filesize not equal to image size.")])
-                err = True
-        except:
+        except (FileNotFoundError, ValueError):
             tftp.exec_queue([uboot_err(f"Failed to read {filename}.")])
+            err = True
+
+    if not err:
+        sz = await _probe_flash(tftp, env)
+        if sz <= 0:
+            tftp.exec_queue([uboot_err("Unable to determine NOR flash size.")])
+            err = True
+        elif len(binary) != sz:
+            tftp.exec_queue([uboot_err("Filesize not equal to image size.")])
             err = True
 
     if err:
         await cmd_help(tftp, ident, env)
-        #await cmd_help(tftp, ident, env, cmd='@flash_restore')
         return
-    
+
+    backup_path = f"backup/{filename}"
+    download = uboot_fetch_static(
+        tftp,
+        backup_path,
+        offset=FLASH_RESTORE_RAM_OFFSET,
+        result_var=_FLASH_RESTORE_STATUS_VAR,
+        requires=requires,
+    )
+    requires.append('test')
+    erase = uboot_nor_erase(offset=0, size=sz, requires=requires)
+    write = uboot_nor_write(
+        tftp,
+        nor_offset=0,
+        ram_offset=FLASH_RESTORE_RAM_OFFSET,
+        size=sz,
+        requires=requires,
+    )
     script = [
-        uboot_msg (f"Uploading {Path(filename).name}... ", nl=False, bold=True),
-        uboot_fetch_static (tftp, filename, offset=1024, requires=requires),
-        uboot_msg ("OK"),
-        uboot_msg ("Erasing flash... ", nl=False, bold=True),
-        uboot_nor_erase (offset=0, size=sz, requires=requires),
-        uboot_msg ("OK"),
-        uboot_msg ("Writing flash... ", nl=False, bold=True),
-        uboot_nor_write (tftp, nor_offset=0, ram_offset=1024, size=sz, requires=requires),
-        uboot_msg ("OK"),
+        uboot_msg(f"Downloading {Path(filename).name}... ", nl=False, bold=True),
+        download,
+        f"if test ${{{_FLASH_RESTORE_STATUS_VAR}}} -eq 0; then",
+        uboot_msg("OK"),
+        uboot_msg("Erasing flash... ", nl=False, bold=True),
+        erase,
+        uboot_msg("OK"),
+        uboot_msg("Writing flash... ", nl=False, bold=True),
+        write,
+        uboot_msg("OK"),
+        uboot_msg("Flash restore complete."),
+        "else",
+        uboot_err(f"Failed to download {backup_path}; flash was not modified."),
+        "fi",
+        f"setenv {_FLASH_RESTORE_STATUS_VAR}",
     ]
-    await tftp.exec (script, requires=requires, final=True)
+    await tftp.exec(script, requires=requires, final=True)
     
 CMDS = {
     '@bootstrap' :
