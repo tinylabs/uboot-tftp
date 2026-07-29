@@ -257,10 +257,12 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
     overwrite  = {
         'ethaddr'    : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
         'hostname'   : ident,
-        'update'     : build_runcmd ('install', 'cache=0/fw=${fw}/soc=${soc}'),
+        'update'     : build_runcmd ('install', 'cache=0/fw=${fw}/soc=${soc}/tag=${tag}'),
+        'tag'        : old_env.get ('tag', 'latest'),
+        'fw'         : old_env.get ('fw', 'lite'),
     }
     merge_keys = [
-        'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'fw', 'board',
+        'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'board',
         *BUILTIN_VARS
     ]
 
