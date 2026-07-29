@@ -255,11 +255,11 @@ def _trunc(s: str, max_len: int) -> str:
 
 def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[str,str]):
     overwrite  = {
-        'ethaddr'    : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
-        'hostname'   : ident,
-        'update'     : build_runcmd ('install', 'cache=0/fw=${fw}/soc=${soc}/tag=${tag}'),
-        'tag'        : old_env.get ('tag', 'latest'),
-        'fw'         : old_env.get ('fw', 'lite'),
+        'ethaddr'            : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
+        'hostname'           : ident,
+        'openipc_update'     : build_runcmd ('openipc_install', 'cache=0/fw=${fw}/soc=${soc}/tag=${tag}'),
+        'tag'                : old_env.get ('tag', 'latest'),
+        'fw'                 : old_env.get ('fw', 'lite'),
     }
     merge_keys = [
         'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'board',
@@ -282,19 +282,19 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
         msgs += [uboot_msg(f">  {k:<10} = '{_trunc(v, 30)}'")]
     return msgs
 
-def openipc_verify_install_args (tftp, ident: str, cmd: str,
-                                 env: dict[str, str]) -> list:
-    script = []
+def openipc_verify_args (tftp, ident: str, cmd: str,
+                         env: dict[str, str]) -> list:
+    errors = []
     fw = env.get("fw")
     if 'soc' not in env:
-        script.append (uboot_err ("Must pass soc=name"))
+        errors.append ("Must pass soc=<name>")
     if fw not in ('lite', 'ultimate'):
-        script.append (uboot_err (f"fw={fw} - Only fw=lite|ultimate supported"))
-    if script:
-        script.append (uboot_err (f"ie: {tftp.cmdtftp} {tftp.rambase} "
-                                  f"{tftp.server_ip}:id={ident}/{cmd}/soc=gk7205v300/fw=lite; "
-                                  f"source {tftp.rambase}"))
-    return script
+        errors.append (f"fw={fw} - Only fw=lite|ultimate supported")
+    if errors:
+        errors.append (f"ie: {tftp.cmdtftp} {tftp.rambase} "
+                     f"{tftp.server_ip}:id={ident}/{cmd}/soc=gk7205v300/fw=lite/tag=latest; "
+                     f"source {tftp.rambase}")
+    return errors
 
 
 async def openipc_collect_install_context(
@@ -322,9 +322,9 @@ async def openipc_collect_install_context(
         await builtin_bootstrap(tftp, ident, {**cenv, 'verbose' : '0'})
         cenv.update(builtin_dict(tftp, ident, cenv))
 
-    msgs = openipc_verify_install_args(tftp, ident, cmd, cenv)
-    if msgs:
-        raise ValueError("\n".join(msgs))
+    errors = openipc_verify_args(tftp, ident, cmd, cenv)
+    if errors:
+        raise ValueError("\n".join(errors))
 
     nor_size = await uboot_nor_probe(
         tftp,
@@ -336,13 +336,6 @@ async def openipc_collect_install_context(
     if nor_size == 0:
         raise ValueError("NOR flash not detected! Aborting...")
 
-    '''
-    nor_size_mb = int(nor_size / 2**20)
-    if nor_size_mb not in (8, 16):
-        raise ValueError(f"Flash={nor_size_mb}M. Only 8M or 16M NOR flash supported.")
-    if nor_size_mb < 16 and cenv["fw"] == "ultimate":
-        raise ValueError("fw=ultimate requires 16M flash")
-    '''
     cache = _parse_cache_flag(cenv["cache"])
     tag = str(cenv["tag"]).strip()
     if not tag:
@@ -639,8 +632,7 @@ def openipc_build_partition_payloads(
         size=env_entry.size,
         little_endian=tftp.is_le,
     )
-    if hasattr(tftp, "exec_queue"):
-        tftp.exec_queue(msgs)
+    tftp.exec_queue(msgs)
     return (
         PartitionPayload(
             name="uboot",
@@ -754,14 +746,16 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             await builtin_flash_backup(tftp, ident, {'file': f'openipc_backup_{ident}_{datetime.now():%Y%m%d-%H%M%S}.bin'})
         for update in pending:
             await openipc_flash_partition(tftp, ident, update)
-        tftp.exec_queue(
-            [
-                uboot_msg(),
-                uboot_msg(f"Install finished for {ident}", bold=True),
-                uboot_msg(f"Updated partitions: {', '.join(update.name for update in pending)}"),
-                uboot_msg(),
-            ]
-        )
+        tftp.exec_queue([
+            uboot_msg(),
+            uboot_msg(f"Install finished for {ident}", bold=True),
+            uboot_msg(f"Updated partitions: {', '.join(update.name for update in pending)}"),
+            uboot_msg(),
+            uboot_msg("Type: run persist - to check for updates on reboot"),
+            uboot_msg(),
+            uboot_msg("Consider supporting OpenIPC: https://opencollective.com/openipc", color='yellow'),
+            uboot_msg(),
+        ])
         await uboot_exec_delay(
             tftp,
             "Rebooting in 10 seconds",
@@ -773,21 +767,6 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
         messages = [uboot_err(line) for line in str(error).splitlines() if line.strip()]
         await tftp.exec(messages or [uboot_err(str(error))], final=True)
 
-async def uboot_nomatch(tftp, ident: str, cmd: str, cmd_list: list=None, final: bool=False) -> None:
-    ''' Throw error for no matching entry '''
-
-    cmds = str (cmd_list) if cmd_list else ''
-    await tftp.exec ([
-        uboot_err(f"uboot-tftp: No matching entry for: id={ident}"),
-        uboot_err(f"uboot-tftp: cmd={cmd} is not recognized."),
-        uboot_msg(f"uboot-tftp: valid cmds = {cmd_list}"),        
-        uboot_msg(f"Add snippet to uboot-tftp config.toml:", color="yellow"),
-        uboot_msg(f"[{ident}]", color="yellow"),
-        uboot_msg(f"function=<python function name>", color="yellow"),
-        uboot_msg()
-    ], final=final)
-
-
 async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     '''
     function: default - Called when config.toml doesn't have matching id=
@@ -795,11 +774,8 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     '''
 
     match cmd:
-        case 'install':
+        case 'openipc_install':
             await openipc_install (tftp, ident, cmd, tftp_env)
-
-        case 'boot':
-            await uboot_boot (tftp)
 
         case 'manifest':
             soc = tftp_env.get ('soc', 'gk7205v300')
@@ -815,44 +791,21 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 )
             await tftp.exec ([uboot_msg ()], final=True)
 
-        case 'crc32':
-            ranges = [
-                # 16MB ranges - 96MB total
-                (0x42000000, 0x1000000), # Dynamic script (changes crc)
-                (0x43000000, 0x1000000), # Stable
-                (0x44000000, 0x1000000), # Stable
-                (0x45000000, 0x1000000), # Stable
-                (0x46000000, 0x1000000), # Stable
-                (0x47000000, 0x1000000), # TLBs, stack, etc (changes crc)
-            ]
-
-            res = await uboot_crc32(tftp, ranges)
-            cmds = [
-                uboot_msg(f'0x{addr:08x}:0x{addr + length - 1:08x} => 0x{res[_]:08x}')
-                for _, (addr, length) in enumerate(ranges)
-            ]
-            await tftp.exec(cmds, final=True)
-
-        case 'cmd_check':
-            cmds = ['cmdtftpput']
-            # This will force a check
-            ok = await tftp.exec([
-                uboot_msg(f'{cmds} present'),
-            ], requires=cmds)
-            # supported cmds will be cached here...
-            ok = await tftp.exec([
-                uboot_msg(f'{cmds} present'),
-            ], requires=cmds)
-            if not ok:
-                msg = uboot_err('failed')
-            else:
-                msg = uboot_msg('passed')
-            await tftp.exec([msg], final=True)
-
         case 'onboot':
-            await tftp.exec([uboot_msg("onboot check...")], final=True)
+            # Check for updates from selected tag.
+            # This will automatically boot on return
+            await tftp.exec([
+                uboot_msg("Checking for updates..."),
+                '; '.join([
+                    'if test -n "${openipc_update}"',
+                    'then run openipc_update',
+                    'else echo "Must run openipc_install first!"',
+                    'fi',
+                ])
+            ], requires=['test'], final=True)
             
         # Unrecognized cmd
         case _:
-            await uboot_nomatch(tftp, ident, cmd,
-                                cmd_list=['install', 'probe', 'backup', 'boot', 'manifest', 'crc32'], final=True)
+            await tftp.exec ([
+                uboot_err(f"openipc: cmd={cmd} is not recognized."),
+            ], final=final)

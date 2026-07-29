@@ -4,7 +4,12 @@ This project is still a work in progress. Expect the API, example scripts, and o
 
 TODO:
 - [x] openipc: Use u-boot from latest tag if selected tag doesn't contain it on install.
-- [ ] openipc: Set mtdparts uboot env variable based on flash size.
+- [x] openipc: Set mtdparts uboot env variable based on flash size.
+- [ ] openipc: Add option to delete overlay partition on initial install (default=off).
+- [x] openipc: Update onboot callback to run update.
+- [ ] openipc: For targets like t30l, match exact name for u-boot but prefix for kernel/rootfs.
+- [ ] openipc: Test with all release targets under latest for compatibility.
+- [ ] openipc: Add dedicated openipc.md doc with install/usage instructions.
 - [x] probe available commands in preflight.
   - [x] Verify commands dynamically when running with cache.
 - [ ] Add internal handling of special commands.
@@ -15,7 +20,7 @@ TODO:
   - [ ] ~~Save list of discovered commands/properties to minimize preflight calls.~~
   - [ ] ~~Use unique namespace prefix for saved commands.~~
   - [ ] echo link to terminal with instructions to setup config.toml/scriptfile for specific id.
-  - [ ] Hosted locally only via python fastapi.
+  - [ ] ~~Hosted locally only via python fastapi.~~
 - [x] Add script logging per session.
 - [ ] ~~Generate FIT image with recorded scripts and orchestrator.~~
 - [x] Add tftp.exec_queue() for non-blocking functions. ie: echo, etc
