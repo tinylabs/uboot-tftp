@@ -153,6 +153,20 @@ def test_extract_default_env_from_uboot_scans_embedded_xz_members():
     assert env["mtdparts"] == DEFAULT_ENV["mtdparts"]
 
 
+def test_extract_default_env_from_uboot_scans_embedded_lzma_members():
+    payload = (
+        b"/tmp/u-boot/common/env_common.c\x00"
+        + _encode_env(DEFAULT_ENV)
+        + b"nvedit.c\x00"
+    )
+    image = b"\xea" * 0x1000 + lzma.compress(payload, format=lzma.FORMAT_ALONE)
+
+    env = extract_default_env_from_uboot(image)
+
+    assert env["bootcmd"] == DEFAULT_ENV["bootcmd"]
+    assert env["mtdparts"] == DEFAULT_ENV["mtdparts"]
+
+
 def test_extract_env_from_flash_image_uses_embedded_default_when_env_is_erased():
     image = _build_flash_image(default_env=DEFAULT_ENV)
 

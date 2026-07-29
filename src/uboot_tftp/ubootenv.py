@@ -481,6 +481,8 @@ def _scan_compressed_members(data: bytes) -> Iterator[tuple[str, int, bytes]]:
             kinds.append("xz")
         if data.startswith(b"BZh", offset):
             kinds.append("bzip2")
+        if _looks_like_lzma_alone_header(data, offset):
+            kinds.append("lzma")
         if _looks_like_zlib_header(data, offset):
             kinds.append("zlib")
 
@@ -503,6 +505,21 @@ def _looks_like_zlib_header(data: bytes, offset: int) -> bool:
     return cmf == 0x78 and ((cmf << 8) + flg) % 31 == 0
 
 
+def _looks_like_lzma_alone_header(data: bytes, offset: int) -> bool:
+    """Recognize an LZMA-alone header without treating arbitrary bytes as one."""
+    if offset + 13 > len(data):
+        return False
+    properties = data[offset]
+    if properties >= 9 * 5 * 5:
+        return False
+    dictionary_size = int.from_bytes(data[offset + 1 : offset + 5], "little")
+    # LZMA-alone encoders use a power-of-two dictionary or 1.5 times one.
+    return any(
+        dictionary_size in (1 << bits, 3 << (bits - 1))
+        for bits in range(12, 31)
+    )
+
+
 def _decompress_member(kind: str, body: bytes) -> bytes | None:
     try:
         if kind == "gzip":
@@ -515,6 +532,10 @@ def _decompress_member(kind: str, body: bytes) -> bytes | None:
             return output if decomp.eof else None
         if kind == "bzip2":
             decomp = bz2.BZ2Decompressor()
+            output = decomp.decompress(body)
+            return output if decomp.eof else None
+        if kind == "lzma":
+            decomp = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
             output = decomp.decompress(body)
             return output if decomp.eof else None
         if kind == "zlib":
