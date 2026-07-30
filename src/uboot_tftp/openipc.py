@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import random
+import re
 import tarfile
 from collections.abc import Iterable
 from datetime import datetime
@@ -254,15 +255,26 @@ def _trunc(s: str, max_len: int) -> str:
     return s
 
 def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[str,str]):
+
+    # Patch bootargs and _mtdparts
+    bootargs = new_env.get("bootargs")
+    if bootargs is None:
+        raise ValueError("release environment has no bootargs to update mtdparts")
+    updated_bootargs = replace_mtdparts_spec(bootargs, "${_mtdparts}")
+    if updated_bootargs is None:
+        raise ValueError("release bootargs has no mtdparts specification to update")
+
     overwrite  = {
-        'ethaddr'            : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
-        'hostname'           : ident,
-        'openipc_update'     : build_runcmd ('openipc_install', 'cache=0/fw=${fw}/soc=${soc}/tag=${tag}'),
-        'tag'                : old_env.get ('tag', 'latest'),
-        'fw'                 : old_env.get ('fw', 'lite'),
+        'ethaddr'        : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
+        'hostname'       : ident,
+        'openipc_update' : build_runcmd ('openipc_install', 'cache=0/fw=${fw}/soc=${soc_part}/tag=${tag}'),
+        'tag'            : old_env.get ('tag', 'latest'),
+        'fw'             : old_env.get ('fw', 'lite'),
+        'bootargs'       : updated_bootargs,
+        '_mtdparts'      : old_env.get ('mtdparts_spec'),
     }
     merge_keys = [
-        'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'board',
+        'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'board', 'soc_part',
         *BUILTIN_VARS
     ]
 
@@ -286,7 +298,7 @@ def openipc_verify_args (tftp, ident: str, cmd: str,
                          env: dict[str, str]) -> list:
     errors = []
     fw = env.get("fw")
-    if 'soc' not in env:
+    if not env.get('soc'):
         errors.append ("Must pass soc=<name>")
     if fw not in ('lite', 'ultimate'):
         errors.append (f"fw={fw} - Only fw=lite|ultimate supported")
@@ -310,21 +322,24 @@ async def openipc_collect_install_context(
     )
     tftp.exec_queue([uboot_msg("OK")])
 
+    # Bootstrap if not already done
+    if not all(key in cenv for key in BUILTIN_VARS):
+        await builtin_bootstrap(tftp, ident, {**cenv, 'verbose' : '0'})
+        cenv.update(builtin_dict(tftp, ident, cenv))
+
     keys = ["nor_size", "fw", "soc", "cache", "tag"]
     cenv.update({k: tftp_env[k] for k in keys if k in tftp_env})
     cenv.setdefault("fw", "lite")
     cenv.setdefault("nor_size", None)
     cenv.setdefault("cache", "1")
     cenv.setdefault("tag", "latest")
-
-    # Bootstrap if not already done
-    if not all(key in cenv for key in BUILTIN_VARS):
-        await builtin_bootstrap(tftp, ident, {**cenv, 'verbose' : '0'})
-        cenv.update(builtin_dict(tftp, ident, cenv))
-
     errors = openipc_verify_args(tftp, ident, cmd, cenv)
     if errors:
         raise ValueError("\n".join(errors))
+
+    # Set soc_part to the passed soc arg. This may be a subset of the
+    # environment soc which is really soc_family
+    cenv.setdefault("soc_part", tftp_env["soc"])
 
     nor_size = await uboot_nor_probe(
         tftp,
@@ -376,15 +391,47 @@ def _parse_cache_flag(value: str) -> bool:
 
 def _asset_destination(manifest: GithubJsonManifest, asset: GithubAsset, soc: str) -> str:
     url = str(asset.get("browser_download_url", "")).strip()
-    return f"{manifest.path}/{soc}/{_parse_url_filename(url)}"
+    # Release assets can be shared by several SoC variants (for example the
+    # t30 kernel/rootfs bundle).  Cache by the release asset name, not the
+    # requested target, so one download URL always maps to one local path.
+    return f"{manifest.path}/assets/{_parse_url_filename(url)}"
 
 
 def _asset_match_groups(soc: str, fw: str, partition: str) -> list[list[str]]:
     if partition == "uboot":
-        return [[soc, "u-boot"], [soc, fw, "u-boot"]]
+        return []
     if partition == "firmware_bundle":
-        return [[soc, "nor", fw, ".tgz"], [soc, "nor", fw, ".tar.gz"]]
+        groups = [[soc, "nor", fw, ".tgz"], [soc, "nor", fw, ".tar.gz"]]
+        family = _firmware_soc_family(soc)
+        if family != soc:
+            groups.extend(
+                [[family, "nor", fw, ".tgz"], [family, "nor", fw, ".tar.gz"]]
+            )
+        return groups
     return [[soc, fw, partition], [soc, partition]]
+
+
+def _firmware_soc_family(soc: str) -> str:
+    """Return the shared Ingenic T-series firmware family, when applicable."""
+    match = re.fullmatch(r"(t\d+)[a-z]\d*", soc.strip().lower())
+    return match.group(1) if match is not None else soc
+
+
+def _find_exact_uboot_asset(manifest: GithubJsonManifest, soc: str) -> GithubAsset | None:
+    target = soc.strip()
+    if not target:
+        return None
+    pattern = re.compile(
+        rf"(?:^|[-_.]){re.escape(target)}(?=$|[-_.])",
+        flags=re.IGNORECASE,
+    )
+    matches = [
+        asset
+        for asset in manifest.find(match=["u-boot"])
+        if "u-boot" in str(asset.get("name", "")).lower()
+        and pattern.search(str(asset.get("name", ""))) is not None
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def openipc_find_release_asset(
@@ -394,6 +441,11 @@ def openipc_find_release_asset(
     fw: str,
     partition: str,
 ) -> GithubAsset:
+    if partition == "uboot":
+        asset = _find_exact_uboot_asset(manifest, soc)
+        if asset is not None:
+            return asset
+        raise ValueError(f"unable to resolve a unique uboot asset for soc={soc}")
     for needles in _asset_match_groups(soc, fw, partition):
         matches = manifest.find(match=needles)
         if len(matches) == 1:
@@ -616,16 +668,11 @@ def openipc_build_partition_payloads(
     kernel_entry = _require_partition(release.partition_table, "kernel")
     rootfs_entry = _require_partition(release.partition_table, "rootfs")
 
+    # TODO: Move to openipc_patch_env
     patched_env = dict(release.release_env)
-    if release.mtdparts_spec is not None:
-        bootargs = patched_env.get("bootargs")
-        if bootargs is None:
-            raise ValueError("release environment has no bootargs to update mtdparts")
-        updated_bootargs = replace_mtdparts_spec(bootargs, "${_mtdparts}")
-        if updated_bootargs is None:
-            raise ValueError("release bootargs has no mtdparts specification to update")
-        patched_env["_mtdparts"] = release.mtdparts_spec
-        patched_env["bootargs"] = updated_bootargs
+    if release.mtdparts_spec is None:
+        raise ValueError("release bootargs has no mtdparts specification to update")
+    context.env['mtdparts_spec'] = release.mtdparts_spec
     msgs = openipc_patch_env(tftp, context.ident, context.env, patched_env)
     env_payload = ubootenv_build(
         patched_env,
@@ -808,4 +855,4 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
         case _:
             await tftp.exec ([
                 uboot_err(f"openipc: cmd={cmd} is not recognized."),
-            ], final=final)
+            ], final=True)

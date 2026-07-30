@@ -19,6 +19,61 @@ def load_openipc_module():
     return module
 
 
+def test_openipc_asset_selection_uses_exact_soc_for_uboot_and_t_family_for_bundle():
+    module = load_openipc_module()
+    assets = [
+        {"name": "u-boot-t30a-nor.bin"},
+        {"name": "u-boot-t30a1-nor.bin"},
+        {"name": "u-boot-t30l-nor.bin"},
+        {"name": "u-boot-t30n-nor.bin"},
+        {"name": "u-boot-t30x-nor.bin"},
+        {"name": "openipc.t30-nor-lite.tgz"},
+    ]
+
+    class Manifest:
+        def assets(self):
+            return [module.GithubAsset(asset) for asset in assets]
+
+        def find(self, *, match):
+            return [
+                module.GithubAsset(asset)
+                for asset in assets
+                if all(token in asset["name"] for token in match)
+            ]
+
+    manifest = Manifest()
+
+    assert module.openipc_find_release_asset(
+        manifest, soc="t30a", fw="lite", partition="uboot"
+    )["name"] == "u-boot-t30a-nor.bin"
+    assert module.openipc_find_release_asset(
+        manifest, soc="t30a1", fw="lite", partition="uboot"
+    )["name"] == "u-boot-t30a1-nor.bin"
+    assert module.openipc_find_release_asset(
+        manifest, soc="t30x", fw="lite", partition="uboot"
+    )["name"] == "u-boot-t30x-nor.bin"
+    assert module.openipc_find_release_asset(
+        manifest, soc="t30a1", fw="lite", partition="firmware_bundle"
+    )["name"] == "openipc.t30-nor-lite.tgz"
+
+
+def test_openipc_asset_destination_is_shared_by_soc_variants():
+    module = load_openipc_module()
+    manifest = SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest")
+    asset = {
+        "browser_download_url": (
+            "https://github.com/OpenIPC/firmware/releases/download/nightly/"
+            "openipc.t30-nor-lite.tgz"
+        )
+    }
+
+    t30a_path = module._asset_destination(manifest, asset, "t30a")
+    t30a1_path = module._asset_destination(manifest, asset, "t30a1")
+
+    assert t30a_path == t30a1_path
+    assert t30a_path.endswith("/assets/openipc.t30-nor-lite.tgz")
+
+
 def test_openipc_load_release_assets_uses_release_uboot_env_for_partition_table(monkeypatch):
     module = load_openipc_module()
     release_env = {

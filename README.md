@@ -7,12 +7,12 @@ TODO:
 - [x] openipc: Set mtdparts uboot env variable based on flash size.
 - [ ] openipc: Add option to delete overlay partition on initial install (default=off).
 - [x] openipc: Update onboot callback to run update.
-- [ ] openipc: For targets like t30l, match exact name for u-boot but prefix for kernel/rootfs.
+- [x] openipc: For targets like t30l, match exact name for u-boot but prefix for kernel/rootfs.
 - [ ] openipc: Test with all release targets under latest for compatibility.
 - [ ] openipc: Add dedicated openipc.md doc with install/usage instructions.
 - [x] probe available commands in preflight.
   - [x] Verify commands dynamically when running with cache.
-- [ ] Add internal handling of special commands.
+- [x] Add internal handling of special commands.
   - [x] Install the `netinit` and `session` commands when found.
   - [x] `persist` should inject itself into bootcmd with a failover for normal boot if tftp times out.
   - [x] `unpersist` to revert (as a baked in command, not dependent on tftp server running).
@@ -33,7 +33,7 @@ TODO:
 Session-aware TFTP server for U-Boot style workflows. In addition to standard TFTP get/put operations it can
 act as a remote command and control server to implement advanced logic from a user supplied python script. The operations
 include python wrappers for calling builtin u-boot cmds, downloading repo assets from github and more. The python logic is
-synchronous so different operations can be performed based on the result of previous operations.
+synchronous so operations can be performed based on the result of previous operations.
 
 There are only two request modes:
 
