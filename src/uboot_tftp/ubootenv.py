@@ -5,6 +5,7 @@ from __future__ import annotations
 import bz2
 import lzma
 import re
+import subprocess
 import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -481,6 +482,8 @@ def _scan_compressed_members(data: bytes) -> Iterator[tuple[str, int, bytes]]:
             kinds.append("xz")
         if data.startswith(b"BZh", offset):
             kinds.append("bzip2")
+        if data.startswith(b"\x89LZO\x00\r\n\x1a\n", offset):
+            kinds.append("lzo")
         if _looks_like_lzma_alone_header(data, offset):
             kinds.append("lzma")
         if _looks_like_zlib_header(data, offset):
@@ -538,11 +541,21 @@ def _decompress_member(kind: str, body: bytes) -> bytes | None:
             decomp = lzma.LZMADecompressor(format=lzma.FORMAT_ALONE)
             output = decomp.decompress(body)
             return output if decomp.eof else None
+        if kind == "lzo":
+            result = subprocess.run(
+                ["lzop", "--decompress", "--stdout"],
+                input=body,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=15,
+            )
+            return result.stdout if result.returncode == 0 else None
         if kind == "zlib":
             decomp = zlib.decompressobj()
             output = decomp.decompress(body)
             return output if decomp.eof else None
-    except (OSError, EOFError, lzma.LZMAError, zlib.error):
+    except (OSError, subprocess.TimeoutExpired, EOFError, lzma.LZMAError, zlib.error):
         return None
     return None
 
