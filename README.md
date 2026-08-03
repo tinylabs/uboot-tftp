@@ -5,7 +5,7 @@ This project is still a work in progress. Expect the API, example scripts, and o
 TODO:
 - [x] openipc: Use u-boot from latest tag if selected tag doesn't contain it on install.
 - [x] openipc: Set mtdparts uboot env variable based on flash size.
-- [ ] openipc: Add option to delete overlay partition on initial install (default=off).
+- [x] openipc: Add option to delete overlay partition on initial install.
 - [x] openipc: Update onboot callback to run update.
 - [x] openipc: For targets like t30l, match exact name for u-boot but prefix for kernel/rootfs.
 - [ ] openipc: Test with all release targets under latest for compatibility.

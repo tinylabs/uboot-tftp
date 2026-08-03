@@ -88,6 +88,44 @@ def test_openipc_asset_selection_prefers_universal_uboot_over_nand():
     assert asset["name"] == "u-boot-hi3516ev300-universal.bin"
 
 
+def test_openipc_erase_overlay_erases_resolved_partition():
+    module = load_openipc_module()
+    table = parse_mtdparts_spec(
+        "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)",
+        total_size=16 * 2**20,
+    )
+
+    assert module._openipc_overlay_partition(table, {}) is None
+    assert module._openipc_overlay_partition(table, {"erase_overlay": "0"}) is None
+    partition = module._openipc_overlay_partition(
+        table,
+        {"erase_overlay": "1"},
+    )
+    assert partition is not None
+    assert partition.name == "rootfs_data"
+    assert partition.offset == 0x750000
+    assert partition.size == 0x8B0000
+
+    class FakeTftp:
+        def __init__(self):
+            self.queued = []
+
+        def exec_queue(self, script, *, requires=()):
+            self.queued.append((script, requires))
+
+    tftp = FakeTftp()
+
+    asyncio.run(module.openipc_erase_overlay(tftp, partition))
+
+    script, requires = tftp.queued[0]
+    assert "Erasing overlay (rootfs_data)" in script[0]
+    assert script[1].splitlines() == [
+        "sf probe 0",
+        "sf erase 0x750000 0x8b0000",
+    ]
+    assert requires == ["sf probe", "sf erase"]
+
+
 def test_openipc_asset_destination_is_shared_by_soc_variants():
     module = load_openipc_module()
     manifest = SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest")

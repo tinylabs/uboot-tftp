@@ -267,7 +267,7 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
     overwrite  = {
         'ethaddr'        : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
         'hostname'       : ident,
-        'openipc_update' : build_runcmd ('openipc_install', 'cache=0/fw=${fw}/soc=${soc_part}/tag=${tag}'),
+        'openipc_update' : build_runcmd ('openipc_update', 'cache=0/fw=${fw}/soc=${soc_part}/tag=${tag}'),
         'tag'            : old_env.get ('tag', 'latest'),
         'fw'             : old_env.get ('fw', 'lite'),
         'bootargs'       : updated_bootargs,
@@ -808,6 +808,35 @@ async def openipc_flash_partition(tftp, ident: str, update: PartitionUpdate) -> 
         requires=requires
     )
 
+
+async def openipc_erase_overlay(tftp, partition: PartitionEntry) -> None:
+    requires = ["sf probe", "sf erase"]
+    tftp.exec_queue(
+        [
+            uboot_msg(
+                f"Erasing overlay ({partition.name})... ",
+                nl=False,
+                bold=True,
+            ),
+            uboot_nor_erase(
+                offset=partition.offset,
+                size=partition.size,
+            ),
+            uboot_msg("OK"),
+        ],
+        requires=requires,
+    )
+
+
+def _openipc_overlay_partition(
+    partition_table: PartitionTable,
+    tftp_env: dict[str, str],
+) -> PartitionEntry | None:
+    if tftp_env.get("erase_overlay") != "1":
+        return None
+    return _require_partition(partition_table, "rootfs_data", "overlay")
+
+
 async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
     '''
     function: openipc_install - Fully automated openipc install to NOR flash.
@@ -817,6 +846,7 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
         context = await openipc_collect_install_context(tftp, ident, cmd, tftp_env)
         release = await openipc_load_release_assets(tftp, context)
         payloads = openipc_build_partition_payloads(tftp, context, release)
+        overlay = _openipc_overlay_partition(release.partition_table, tftp_env)
         tftp.exec_queue([
             uboot_msg("Copying NOR flash to RAM... ", bold=True, nl=False),
             uboot_nor_read(
@@ -839,7 +869,7 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 *openipc_format_update_summary(plan),
         ])
         pending = plan.pending()
-        if not pending:
+        if not pending and overlay is None:
             await tftp.exec(
                 [uboot_msg("All target partitions already match release assets.")],
                 final=True,
@@ -849,16 +879,28 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             await builtin_flash_backup(tftp, ident, {'file': f'openipc_backup_{ident}_{datetime.now():%Y%m%d-%H%M%S}.bin'})
         for update in pending:
             await openipc_flash_partition(tftp, ident, update)
-        tftp.exec_queue([
+        if overlay is not None:
+            await openipc_erase_overlay(tftp, overlay)
+        summary = [
             uboot_msg(),
             uboot_msg(f"Install finished for {ident}", bold=True),
-            uboot_msg(f"Updated partitions: {', '.join(update.name for update in pending)}"),
+        ]
+        if pending:
+            summary.append(
+                uboot_msg(
+                    f"Updated partitions: {', '.join(update.name for update in pending)}"
+                )
+            )
+        if overlay is not None:
+            summary.append(uboot_msg(f"Erased overlay partition: {overlay.name}"))
+        summary.extend([
             uboot_msg(),
             uboot_msg("Type: run persist - to check for updates on reboot"),
             uboot_msg(),
             uboot_msg("Consider supporting OpenIPC: https://opencollective.com/openipc", color='yellow'),
             uboot_msg(),
         ])
+        tftp.exec_queue(summary)
         await uboot_exec_delay(
             tftp,
             "Rebooting in 10 seconds",
@@ -878,6 +920,10 @@ async def default(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
 
     match cmd:
         case 'openipc_install':
+            tftp_env.setdefault('erase_overlay', '1')
+            await openipc_install (tftp, ident, cmd, tftp_env)
+
+        case 'openipc_update':
             await openipc_install (tftp, ident, cmd, tftp_env)
 
         case 'manifest':
