@@ -269,7 +269,7 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
         raise ValueError("release environment has no bootcmd to update")
     first_boot = OPENIPC_FIRST_BOOT_VAR
     updated_bootcmd = (
-        f'if test "${{{first_boot}}}" = "1"; then '
+        f'if test "${{{first_boot}}}" = "1"; '
         f'then setenv {first_boot}; saveenv; fi; '
         f"{bootcmd}"
     )
@@ -289,6 +289,11 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
         'ipaddr', 'netmask', 'gatewayip', 'dnsip', 'serverip', 'board', 'soc_part',
         *BUILTIN_VARS
     ]
+
+    # If bootdefault set then reinstall persistence
+    if old_env.get ('bootdefault'):
+        overwrite['bootdefault'] = overwrite['bootcmd']
+        overwrite['bootcmd'] = 'run onboot'
 
     # Make sure loadaddr is set for sandbox
     if old_env.get('board', '') == 'sandbox':
@@ -795,6 +800,11 @@ def _stage_partition_filename(ident: str, update: PartitionUpdate) -> str:
     return f"install/{Path(update.source).name}"
 
 
+def _only_uboot_env_changed(updates: Iterable[PartitionUpdate]) -> bool:
+    pending = tuple(updates)
+    return bool(pending) and all(update.name == "env" for update in pending)
+
+
 async def openipc_flash_partition(tftp, ident: str, update: PartitionUpdate) -> None:
     filename = _stage_partition_filename(ident, update)
     tftp.write_file(filename, update.payload)
@@ -881,6 +891,17 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
                 *openipc_format_update_summary(plan),
         ])
         pending = plan.pending()
+        if _only_uboot_env_changed(pending):
+            await tftp.exec(
+                [
+                    uboot_msg(
+                        "Firmware partitions already match release assets; "
+                        "ignoring U-Boot environment-only changes."
+                    )
+                ],
+                final=True,
+            )
+            return
         if not pending and overlay is None:
             await tftp.exec(
                 [uboot_msg("All target partitions already match release assets.")],

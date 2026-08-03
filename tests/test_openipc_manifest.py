@@ -629,3 +629,82 @@ def test_openipc_build_partition_payloads_prefers_extracted_member_names_for_sou
     rootfs_payload = next(payload for payload in payloads if payload.name == "rootfs")
     assert kernel_payload.source == "uImage.gk7205v300"
     assert rootfs_payload.source == "rootfs.squashfs"
+
+
+def test_openipc_only_uboot_env_changed_requires_env_only_pending_update():
+    module = load_openipc_module()
+
+    def update(name):
+        return module.PartitionUpdate(
+            name=name,
+            offset=0,
+            size=1,
+            payload=b"x",
+            source=f"{name}.bin",
+            flash_crc32=1,
+            payload_crc32=2,
+            needs_update=True,
+        )
+
+    assert module._only_uboot_env_changed([update("env")]) is True
+    assert module._only_uboot_env_changed([]) is False
+    assert module._only_uboot_env_changed([update("env"), update("kernel")]) is False
+
+
+def test_openipc_install_does_nothing_for_uboot_env_only_change(monkeypatch):
+    module = load_openipc_module()
+    env_update = module.PartitionUpdate(
+        name="env",
+        offset=0x40000,
+        size=0x10000,
+        payload=b"env",
+        source="cam123-env.bin",
+        flash_crc32=1,
+        payload_crc32=2,
+        needs_update=True,
+    )
+    context = SimpleNamespace(nor_size=8 * 2**20)
+    release = SimpleNamespace(partition_table=object())
+    plan = SimpleNamespace(updates=(env_update,), pending=lambda: (env_update,))
+
+    async def collect_context(*args, **kwargs):  # noqa: ARG001
+        return context
+
+    async def load_assets(*args, **kwargs):  # noqa: ARG001
+        return release
+
+    async def build_plan(*args, **kwargs):  # noqa: ARG001
+        return plan
+
+    async def unexpected(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("env-only change must not modify flash")
+
+    monkeypatch.setattr(module, "openipc_collect_install_context", collect_context)
+    monkeypatch.setattr(module, "openipc_load_release_assets", load_assets)
+    monkeypatch.setattr(module, "openipc_build_partition_payloads", lambda *args: ())
+    monkeypatch.setattr(module, "_openipc_overlay_partition", lambda *args: object())
+    monkeypatch.setattr(module, "uboot_nor_read", lambda *args, **kwargs: "read flash")
+    monkeypatch.setattr(module, "build_partition_update_plan", build_plan)
+    monkeypatch.setattr(module, "builtin_flash_backup", unexpected)
+    monkeypatch.setattr(module, "openipc_flash_partition", unexpected)
+    monkeypatch.setattr(module, "openipc_erase_overlay", unexpected)
+    monkeypatch.setattr(module, "uboot_exec_delay", unexpected)
+
+    class FakeTftp:
+        rambase_addr = 0
+
+        def __init__(self):
+            self.exec_calls = []
+
+        def exec_queue(self, script, *, requires=()):  # noqa: ARG002
+            pass
+
+        async def exec(self, script, *, final=False):
+            self.exec_calls.append((script, final))
+
+    tftp = FakeTftp()
+    asyncio.run(module.openipc_install(tftp, "cam123", "openipc_update", {}))
+
+    assert len(tftp.exec_calls) == 1
+    assert tftp.exec_calls[0][1] is True
+    assert "ignoring U-Boot environment-only changes" in tftp.exec_calls[0][0][0]
