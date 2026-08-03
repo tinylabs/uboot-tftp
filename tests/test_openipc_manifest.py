@@ -27,6 +27,9 @@ def test_openipc_asset_selection_uses_exact_soc_for_uboot_and_t_family_for_bundl
         {"name": "u-boot-t30l-nor.bin"},
         {"name": "u-boot-t30n-nor.bin"},
         {"name": "u-boot-t30x-nor.bin"},
+        {"name": "boot-hi3516cv608-nor.bin"},
+        {"name": "boot-hi3516cv610-00g-nor.bin"},
+        {"name": "openipc.hi3516cv6xx-nor-ultimate.tgz"},
         {"name": "openipc.t30-nor-lite.tgz"},
     ]
 
@@ -53,8 +56,36 @@ def test_openipc_asset_selection_uses_exact_soc_for_uboot_and_t_family_for_bundl
         manifest, soc="t30x", fw="lite", partition="uboot"
     )["name"] == "u-boot-t30x-nor.bin"
     assert module.openipc_find_release_asset(
+        manifest, soc="hi3516cv610-00g", fw="lite", partition="uboot"
+    )["name"] == "boot-hi3516cv610-00g-nor.bin"
+    assert module.openipc_find_release_asset(
+        manifest, soc="hi3516cv610-00g", fw="ultimate", partition="firmware_bundle"
+    )["name"] == "openipc.hi3516cv6xx-nor-ultimate.tgz"
+    assert module.openipc_find_release_asset(
         manifest, soc="t30a1", fw="lite", partition="firmware_bundle"
     )["name"] == "openipc.t30-nor-lite.tgz"
+
+
+def test_openipc_asset_selection_prefers_universal_uboot_over_nand():
+    module = load_openipc_module()
+    assets = [
+        {"name": "u-boot-hi3516ev300-nand.bin"},
+        {"name": "u-boot-hi3516ev300-universal.bin"},
+    ]
+
+    class Manifest:
+        def find(self, *, match):
+            return [
+                module.GithubAsset(asset)
+                for asset in assets
+                if all(token in asset["name"] for token in match)
+            ]
+
+    asset = module.openipc_find_release_asset(
+        Manifest(), soc="hi3516ev300", fw="lite", partition="uboot"
+    )
+
+    assert asset["name"] == "u-boot-hi3516ev300-universal.bin"
 
 
 def test_openipc_asset_destination_is_shared_by_soc_variants():

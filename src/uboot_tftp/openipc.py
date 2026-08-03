@@ -300,7 +300,7 @@ def openipc_verify_args (tftp, ident: str, cmd: str,
     fw = env.get("fw")
     if not env.get('soc'):
         errors.append ("Must pass soc=<name>")
-    if fw not in ('lite', 'ultimate'):
+    if fw not in ('lite', 'ultimate', 'neo'):
         errors.append (f"fw={fw} - Only fw=lite|ultimate supported")
     if errors:
         errors.append (f"ie: {tftp.cmdtftp} {tftp.rambase} "
@@ -417,20 +417,70 @@ def _firmware_soc_family(soc: str) -> str:
     return match.group(1) if match is not None else soc
 
 
-def _find_exact_uboot_asset(manifest: GithubJsonManifest, soc: str) -> GithubAsset | None:
+def _find_exact_uboot_asset(
+    manifest: GithubJsonManifest,
+    soc: str,
+    *,
+    prefix: str = "u-boot",
+) -> GithubAsset | None:
     target = soc.strip()
     if not target:
         return None
     pattern = re.compile(
-        rf"(?:^|[-_.]){re.escape(target)}(?=$|[-_.])",
+        rf"^{re.escape(prefix)}[-_.]{re.escape(target)}(?=$|[-_.])",
         flags=re.IGNORECASE,
     )
     matches = [
         asset
-        for asset in manifest.find(match=["u-boot"])
-        if "u-boot" in str(asset.get("name", "")).lower()
-        and pattern.search(str(asset.get("name", ""))) is not None
+        for asset in manifest.find(match=[prefix])
+        if pattern.search(str(asset.get("name", ""))) is not None
     ]
+    universal = [
+        asset
+        for asset in matches
+        if re.search(
+            r"(?:^|[-_.])universal(?=$|[-_.])",
+            str(asset.get("name", "")),
+            flags=re.IGNORECASE,
+        )
+    ]
+    if len(universal) == 1:
+        return universal[0]
+
+    # NAND installation is not supported, so a NAND-only image must not be
+    # selected as a fallback for the NOR install flow.
+    supported = [
+        asset
+        for asset in matches
+        if re.search(
+            r"(?:^|[-_.])nand(?=$|[-_.])",
+            str(asset.get("name", "")),
+            flags=re.IGNORECASE,
+        )
+        is None
+    ]
+    return supported[0] if len(supported) == 1 else None
+
+
+def _find_wildcard_firmware_bundle(
+    manifest: GithubJsonManifest,
+    soc: str,
+    fw: str,
+) -> GithubAsset | None:
+    """Find a shared bundle whose ``x`` characters are SoC wildcards."""
+    name_pattern = re.compile(
+        rf"^openipc[.-](?P<target>[a-z0-9x]+)-nor-{re.escape(fw)}"
+        rf"\.(?:tgz|tar\.gz)$",
+        flags=re.IGNORECASE,
+    )
+    matches: list[GithubAsset] = []
+    for asset in manifest.find(match=["openipc", "nor", fw]):
+        match = name_pattern.fullmatch(str(asset.get("name", "")))
+        if match is None or "x" not in match.group("target").lower():
+            continue
+        target_pattern = re.escape(match.group("target")).replace("x", "[a-z0-9]")
+        if re.match(rf"^{target_pattern}(?:[-_.]|$)", soc, flags=re.IGNORECASE):
+            matches.append(asset)
     return matches[0] if len(matches) == 1 else None
 
 
@@ -443,6 +493,8 @@ def openipc_find_release_asset(
 ) -> GithubAsset:
     if partition == "uboot":
         asset = _find_exact_uboot_asset(manifest, soc)
+        if asset is None:
+            asset = _find_exact_uboot_asset(manifest, soc, prefix="boot")
         if asset is not None:
             return asset
         raise ValueError(f"unable to resolve a unique uboot asset for soc={soc}")
@@ -450,6 +502,10 @@ def openipc_find_release_asset(
         matches = manifest.find(match=needles)
         if len(matches) == 1:
             return matches[0]
+    if partition == "firmware_bundle":
+        asset = _find_wildcard_firmware_bundle(manifest, soc, fw)
+        if asset is not None:
+            return asset
     raise ValueError(
         f"unable to resolve a unique {partition} asset for soc={soc} fw={fw}"
     )
