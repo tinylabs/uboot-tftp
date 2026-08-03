@@ -30,6 +30,7 @@ from uboot_tftp.ubootenv import *
 from uboot_tftp.tools import *
 
 OPENIPC_RELEASE_PATH_PREFIX = "OpenIPC/firmware/releases/tags"
+OPENIPC_FIRST_BOOT_VAR = "openipc_firstboot"
 FLASH_SNAPSHOT_RAM_OFFSET = 16 * 2**20
 FLASH_STAGE_RAM_OFFSET = 1 * 2**20
 
@@ -263,6 +264,15 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
     updated_bootargs = replace_mtdparts_spec(bootargs, "${_mtdparts}")
     if updated_bootargs is None:
         raise ValueError("release bootargs has no mtdparts specification to update")
+    bootcmd = new_env.get("bootcmd")
+    if bootcmd is None:
+        raise ValueError("release environment has no bootcmd to update")
+    first_boot = OPENIPC_FIRST_BOOT_VAR
+    updated_bootcmd = (
+        f'if test "${{{first_boot}}}" = "1"; then '
+        f'then setenv {first_boot}; saveenv; fi; '
+        f"{bootcmd}"
+    )
 
     overwrite  = {
         'ethaddr'        : gen_mac (old_env.get('ethaddr', '00:00:00:00:00:00')),
@@ -271,6 +281,8 @@ def openipc_patch_env(tftp, ident: str, old_env: dict[str,str], new_env: dict[st
         'tag'            : old_env.get ('tag', 'latest'),
         'fw'             : old_env.get ('fw', 'lite'),
         'bootargs'       : updated_bootargs,
+        'bootcmd'        : updated_bootcmd,
+        first_boot       : '1',
         '_mtdparts'      : old_env.get ('mtdparts_spec'),
     }
     merge_keys = [

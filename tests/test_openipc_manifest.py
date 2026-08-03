@@ -126,6 +126,44 @@ def test_openipc_erase_overlay_erases_resolved_partition():
     assert requires == ["sf probe", "sf erase"]
 
 
+def test_openipc_patch_env_saves_runtime_totalmem_on_first_boot():
+    module = load_openipc_module()
+    spec = "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)"
+    old_env = {
+        "ethaddr": "00:11:22:33:44:55",
+        "fw": "lite",
+        "mtdparts_spec": spec,
+    }
+    new_env = {
+        "bootargs": f"console=ttyS0 mtdparts={spec}",
+        "bootcmd": "run boot",
+    }
+
+    module.openipc_patch_env(object(), "cam123", old_env, new_env)
+
+    assert "totalmem" not in new_env
+    assert new_env["openipc_firstboot"] == "1"
+    assert new_env["bootcmd"] == (
+        'if test "${openipc_firstboot}" = "1"; then '
+        'if test -n "${totalmem}"; then setenv openipc_firstboot; saveenv; fi; fi; '
+        "run boot"
+    )
+
+
+def test_openipc_patch_env_preserves_existing_totalmem():
+    module = load_openipc_module()
+    spec = "sfc:256k(boot),64k(env),2048k(kernel),5120k(rootfs),-(rootfs_data)"
+    old_env = {"totalmem": "128M", "mtdparts_spec": spec}
+    new_env = {
+        "bootargs": f"console=ttyS0 mtdparts={spec}",
+        "bootcmd": "run boot",
+    }
+
+    module.openipc_patch_env(object(), "cam123", old_env, new_env)
+
+    assert new_env["totalmem"] == "128M"
+
+
 def test_openipc_asset_destination_is_shared_by_soc_variants():
     module = load_openipc_module()
     manifest = SimpleNamespace(path="OpenIPC/firmware/releases/tags/latest")
