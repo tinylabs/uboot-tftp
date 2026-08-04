@@ -1,0 +1,20 @@
+[server]
+scriptfile = "src/uboot_tftp/openipc.py"
+rootdir = "/tmp/openipc-tftp"
+address = "0.0.0.0"
+port = 69
+timeout = 3
+retries = 1
+log_level = "info"
+#log_level = "debug"
+# Default \c for older targets
+#echo_no_newline = "dash_n"
+
+[env]
+rambase    = "baseaddr"
+#rambase    = "loadaddr"
+cmdtftp    = "tftpboot"
+cmdtftpput = "tftpput"
+
+[default]
+entry_func = "default"

@@ -356,6 +356,7 @@ async def openipc_collect_install_context(
 
     # Set soc_part to the passed soc arg. This may be a subset of the
     # environment soc which is really soc_family
+    # Needed for uboot image resolution where uboot might differ from kernel/rootfs
     cenv.setdefault("soc_part", tftp_env["soc"])
 
     nor_size = await uboot_nor_probe(
@@ -928,7 +929,8 @@ async def openipc_install(tftp, ident: str, cmd: str, tftp_env: dict[str, str]):
             summary.append(uboot_msg(f"Erased overlay partition: {overlay.name}"))
         summary.extend([
             uboot_msg(),
-            uboot_msg("Type: run persist - to check for updates on reboot"),
+            uboot_msg("Type: run persist - to check for updates on reboot", color='yellow'),
+            uboot_msg(f"  This install tracks github tag:{context.tag}", color='yellow'),
             uboot_msg(),
             uboot_msg("Consider supporting OpenIPC: https://opencollective.com/openipc", color='yellow'),
             uboot_msg(),
